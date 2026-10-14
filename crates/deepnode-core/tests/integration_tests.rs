@@ -89,7 +89,7 @@ fn test_bom_and_file_list_parsing() {
     let sample_file = dir.path().join("sample.txt");
     std::fs::write(&sample_file, b"sample content").unwrap();
 
-    // Create a FileList.dat with UTF-8 BOM, exactly like TeraCopy
+    // Create a FileList.dat with UTF-8 BOM
     let list_file = dir.path().join("FileList.dat");
     let mut file = std::fs::File::create(&list_file).unwrap();
     // Write UTF-8 BOM

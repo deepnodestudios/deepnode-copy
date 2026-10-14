@@ -1,6 +1,6 @@
 # DeepNode Copy
 
-**DeepNode Copy**, Windows işletim sistemi için geliştirilmiş, ultra hafif, donanım hızında ve güvenilir bir dosya kopyalama, taşıma ve bütünlük doğrulama yöneticisidir. Klasik **TeraCopy** deneyimini modern Rust çekirdek motoru, SIMD hash algoritmaları, asenkron Win32 Overlapped Direct I/O ve şık Tauri v2 + React arayüzü ile bir üst seviyeye taşır.
+**DeepNode Copy**, Windows işletim sistemi için geliştirilmiş, ultra hafif, donanım hızında ve güvenilir bir dosya kopyalama, taşıma ve bütünlük doğrulama yöneticisidir. Modern Rust çekirdek motoru, SIMD hash algoritmaları, asenkron Win32 Overlapped Direct I/O ve şık Tauri v2 + React arayüzü ile yüksek performanslı dosya yönetimi sunar.
 
 ---
 
@@ -56,7 +56,7 @@ Hedefte aynı isimli dosya olduğunda:
 ---
 
 ### 5. Arayüz (GUI) & Kullanıcı Deneyimi
-- **Kompakt (Mini İlerleme Barı)**: TeraCopy tarzı ultra minimalist ilerleme penceresi.
+- **Kompakt (Mini İlerleme Barı)**: Masaüstünde az yer kaplayan ultra minimalist ilerleme penceresi.
 - **Genişletilmiş Görünüm**: Gerçek zamanlı dalga formu Hız Grafiği (Speed Chart), detaylı dosya listesi, Başarılı/Atlanan/Hatalı filtreleri.
 - **Her Zaman Üstte (Always On Top)** desteği.
 - **Bittiğinde Yapılacak Eylemler (On Finish)**:

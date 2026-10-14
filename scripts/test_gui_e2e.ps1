@@ -57,15 +57,15 @@ if ((Test-Path $dstFile1) -and (Test-Path $dstFile2) -and (Test-Path $dstFile3))
 }
 
 # -------------------------------------------------------------------------------------
-# TEST 2: TOTAL COMMANDER / TERACOPY LİSTE DOSYASI (*FileList.tmp) PARAMETRESİ
+# TEST 2: DOSYA LİSTESİ (*FileList.tmp) PARAMETRESİ
 # -------------------------------------------------------------------------------------
-Write-Host "`n[TEST 2] Total Commander / TeraCopy Liste Parametresi (*list.tmp) Test Ediliyor..." -ForegroundColor Yellow
+Write-Host "`n[TEST 2] Dosya Yöneticisi Liste Parametresi (*list.tmp) Test Ediliyor..." -ForegroundColor Yellow
 
 $listFile = "$sandbox\secilenler.tmp"
 $listDst = "$sandbox\hedef_liste"
 New-Item -ItemType Directory -Force -Path $listDst | Out-Null
 
-# Listeye dosyaları UTF-8 olarak tırnaklı yazalım (TeraCopy standardı)
+# Listeye dosyaları UTF-8 olarak tırnaklı yazalım
 $listContent = @(
     "`"$($testFiles[0])`"",
     "`"$($testFiles[1])`""

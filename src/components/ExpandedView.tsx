@@ -654,7 +654,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                 ))}
               </div>
             ) : (
-              /* Completely Empty State: TeraCopy-style drop zone */
+              /* Completely Empty State: Drag and drop zone */
               <div className="h-full flex flex-col items-center justify-center py-6 px-4 text-center border-2 border-dashed border-neutral-800/80 rounded-xl m-2 bg-neutral-950/20">
                 <FolderPlus className="w-10 h-10 text-neutral-600 mb-3" />
                 <h3 className="text-xs font-semibold text-neutral-300 mb-1">{t.dragDropHint}</h3>

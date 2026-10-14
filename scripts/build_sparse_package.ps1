@@ -53,7 +53,7 @@ Copy-Item "$projectRoot\src-tauri\icons\Square150x150Logo.png" "$assetsDir\Squar
 Copy-Item "$projectRoot\src-tauri\icons\Square44x44Logo.png" "$assetsDir\Square44x44Logo.png" -Force
 Copy-Item "$projectRoot\src-tauri\icons\StoreLogo.png" "$assetsDir\StoreLogo.png" -Force
 
-# 4. Generate AppxManifest.xml exactly matching TeraCopy's sparse package structure
+# 4. Generate AppxManifest.xml for sparse package structure
 Write-Host ">>> Generating AppxManifest.xml for Windows 11 Fluent Context Menu..." -ForegroundColor Cyan
 $manifestContent = @"
 <?xml version="1.0" encoding="utf-8"?>

@@ -19,7 +19,7 @@ impl FileScanner {
                 continue;
             }
 
-            // Check if this is a file list pointer (*list.txt from TC, Opus, or TeraCopy)
+            // Check if this is a file list pointer (*list.txt from file managers)
             if let Some(stripped) = clean_src.strip_prefix('*') {
                 let list_path = sanitize_path(stripped);
                 if list_path.exists() {

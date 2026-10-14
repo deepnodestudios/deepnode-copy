@@ -134,7 +134,7 @@ export const CompactView: React.FC<CompactViewProps> = ({
         </div>
       </div>
 
-      {/* From / To Path info (TeraCopy style) */}
+      {/* From / To Path info */}
       {(source || destination) && (
         <div className="flex items-center gap-1.5 py-1 text-[11px] text-neutral-400 font-mono overflow-hidden">
           <FolderOpen className="w-3 h-3 text-neutral-500 flex-shrink-0" />
@@ -193,7 +193,7 @@ export const CompactView: React.FC<CompactViewProps> = ({
         </div>
       </div>
 
-      {/* 3. Real-Time TeraCopy Speed Chart */}
+      {/* 3. Real-Time Speed Chart */}
       <div className="my-1">
         <SpeedChart speedHistory={speedHistory} />
       </div>

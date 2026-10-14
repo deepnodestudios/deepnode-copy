@@ -38,7 +38,7 @@ export const App: React.FC = () => {
   const [hashAlgorithm, setHashAlgorithm] = useState("xxhash3");
   const [directIo, setDirectIo] = useState(false);
 
-  // Staged sources and destination (TeraCopy workstation)
+  // Staged sources and destination workstation
   const [stagedSources, setStagedSources] = useState<string[]>([]);
   const [destination, setDestination] = useState<string>("");
   const [stagedPreview, setStagedPreview] = useState<ScanPreviewResult | null>(null);
@@ -616,14 +616,14 @@ export const App: React.FC = () => {
         lang={lang}
       />
 
-      {/* TeraCopy-style File Conflict Resolution Modal */}
+      {/* File Conflict Resolution Modal */}
       <ConflictModal
         conflict={activeConflict}
         onResolve={handleResolveConflict}
         lang={lang}
       />
 
-      {/* TeraCopy-style Copy & Paste Chooser Modal */}
+      {/* Copy & Paste Chooser Modal */}
       <CopyPasteModal
         isOpen={copyPasteModalOpen}
         source={stagedSources[0] || ""}
