@@ -1,0 +1,16 @@
+[package]
+name = "deepnode-shell"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+deepnode-core = { path = "../deepnode-core" }
+windows = { workspace = true }
+windows-core = "0.58"
+tracing = { workspace = true }
+thiserror = { workspace = true }

@@ -1,0 +1,12 @@
+======================================================================
+DeepNode Copy - XYplorer Integration Guide
+======================================================================
+
+In XYplorer, create a User Button or run command:
+
+For Copy:
+run """<xepath>\deepnode-cli.exe"" copy *""<curitem>"" ""<curpath>"""
+
+For Selected Items:
+writefile "<xepath>\queue.txt", "<get SelectedItemsPathNames <crlf>>";
+run """<xepath>\deepnode-cli.exe"" copy *""<xepath>\queue.txt"" ""<curpath>"""

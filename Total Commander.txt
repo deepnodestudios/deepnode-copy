@@ -1,0 +1,23 @@
+======================================================================
+DeepNode Copy - Total Commander Integration Guide
+======================================================================
+
+1. Drag `deepnode-cli.exe` (or `DeepNodeCopy.exe`) to Total Commander toolbar / button bar.
+2. Right click the newly created button and select "Change...".
+3. Configure the parameters:
+
+For COPY button:
+- Command: %COMMANDER_PATH%\Tools\DeepNode\deepnode-cli.exe
+- Parameters: copy *"%UL" "%T"
+- Icon file: (select DeepNode icon #1)
+- Tooltip: DeepNode Copy
+
+For MOVE button:
+- Command: %COMMANDER_PATH%\Tools\DeepNode\deepnode-cli.exe
+- Parameters: move *"%UL" "%T"
+- Icon file: (select DeepNode icon #2)
+- Tooltip: DeepNode Move
+
+Note: `%UL` produces a UTF-8 Unicode list file containing selected files,
+and `%T` produces the target pane directory path.
+`*` tells DeepNode to read the path arguments from the temporary list file.

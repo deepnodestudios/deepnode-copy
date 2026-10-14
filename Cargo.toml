@@ -1,0 +1,62 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/deepnode-core",
+    "crates/deepnode-db",
+    "crates/deepnode-cli",
+    "crates/deepnode-shell",
+    "src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["DeepNode Team"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/deepnodestudios/deepnode-copy"
+
+[workspace.dependencies]
+tokio = { version = "1.40", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+blake3 = { version = "1.5", features = ["rayon", "mmap"] }
+sha2 = "0.10"
+sha1 = "0.10"
+md-5 = "0.10"
+hex = "0.4"
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+uuid = { version = "1.10", features = ["v4"] }
+
+# Win32 APIs
+windows = { version = "0.58", features = [
+    "implement",
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Memory",
+    "Win32_System_Ioctl",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+    "Win32_System_SystemServices",
+    "Win32_System_Shutdown",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Ole",
+    "Win32_System_Registry",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
+    "Win32_System_LibraryLoader",
+] }

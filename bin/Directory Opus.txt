@@ -1,0 +1,26 @@
+======================================================================
+DeepNode Copy - Directory Opus Integration Guide
+======================================================================
+
+1. Copy the XML code below to clipboard:
+
+<?xml version="1.0" encoding="UTF-8"?>
+<usercommand backcol="none" textcol="none">
+<label>DeepNode_CopyFile</label>
+<tip>Copy files with DeepNode Copy</tip>
+<function type="normal">
+<instruction>deepnode-cli.exe copy *{allfilepath|filem} {destpath}</instruction>
+</function>
+</usercommand>
+
+2. In Directory Opus, right-click any toolbar, enter "Customize" mode, and paste the button.
+3. Repeat with the following XML code for the MOVE button:
+
+<?xml version="1.0" encoding="UTF-8"?>
+<usercommand backcol="none" textcol="none">
+<label>DeepNode_MoveFile</label>
+<tip>Move files with DeepNode Copy</tip>
+<function type="normal">
+<instruction>deepnode-cli.exe move *{allfilepath|filem} {destpath}</instruction>
+</function>
+</usercommand>

@@ -1,0 +1,28 @@
+[package]
+name = "deepnode-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+xxhash-rust = { workspace = true }
+blake3 = { workspace = true }
+sha2 = { workspace = true }
+sha1 = { workspace = true }
+md-5 = { workspace = true }
+hex = { workspace = true }
+crossbeam-channel = { workspace = true }
+parking_lot = { workspace = true }
+windows = { workspace = true }
+walkdir = "2.5"
+
+[dev-dependencies]
+tempfile = "3.13"

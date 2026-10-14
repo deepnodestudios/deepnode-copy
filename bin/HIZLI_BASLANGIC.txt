@@ -1,0 +1,23 @@
+======================================================================
+DEEPNODE COPY - HIZLI BAŞLANGIÇ KILAVUZU
+======================================================================
+
+1. MASAÜSTÜ ARAYÜZÜNÜ (GUI) BAŞLATMAK:
+   `DeepNodeCopy.exe` dosyasına çift tıklayarak modern arayüzü açabilirsiniz.
+   - Kompakt (Mini bar) ve Genişletilmiş mod geçişi
+   - Gerçek zamanlı hız grafiği ve ETA
+   - Pano (Clipboard) hash doğrulama
+
+2. KOMUT SATIRI (CLI) İLE KOPYALAMA:
+   Terminalde veya PowerShell'de:
+   .\deepnode-cli.exe copy "C:\Kaynak\Dosya.mkv" "D:\Hedef"
+   .\deepnode-cli.exe move "C:\Kaynak\Klasor" "D:\Hedef"
+   .\deepnode-cli.exe verify "D:\Hedef\Dosya.mkv" --expected 4f367414...
+
+3. TOTAL COMMANDER VE DIRECTORY OPUS ENTEGRASYONU:
+   - Total Commander için: `Total Commander.txt` dosyasındaki buton parametrelerini kopyalayın.
+   - Directory Opus için: `Directory Opus.txt` dosyasındaki XML kodunu araç çubuğuna yapıştırın.
+
+4. DİJİTAL İMZA & GÜVENLİK:
+   Tüm ikili dosyalar dijital olarak imzalanmıştır.
+======================================================================

@@ -1,0 +1,56 @@
+# Rust / Cargo
+target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Node / Vite
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Tauri build artifacts
+src-tauri/target/
+
+# Binaries & Installers
+*.exe
+*.msi
+*.msix
+*.dll
+!bin/deepnode_shell.dll
+installers/
+package_output/
+package_layout/
+
+# Certificates, Keys & Secrets (CRITICAL FOR PUBLIC REPOS)
+certificates/
+*.pfx
+*.key
+*.pem
+*.p12
+*.cer
+*.crt
+*.csr
+
+# Database, Logs & Runtime State
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.log
+engine.log
+panic.log
+
+# Test runs & temp files
+test_gui_run/
+.Identifier
+
+# OS & Editor files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.vscode/
+.idea/
+*.swp
+*.swo
