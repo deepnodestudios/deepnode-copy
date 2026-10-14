@@ -133,7 +133,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
     ? destination.replace(/\\$/, "").split("\\").pop() || destination
     : stagedSources.length > 0
     ? `${stagedSources.length} ${lang === "tr" ? "Öğe Seçildi" : "Items Staged"}`
-    : lang === "tr" ? "NVMe Aktarım İstasyonu" : "NVMe Transfer Station";
+    : lang === "tr" ? "Hazır (Beklemede)" : "Ready (Idle)";
 
   const queueCount = files.length > 0 ? files.length : stagedSources.length;
   const verifiedCount = files.filter((f) => f.status === "completed").length;

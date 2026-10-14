@@ -127,10 +127,18 @@ export const CompactView: React.FC<CompactViewProps> = ({
       <div className="flex items-center justify-between gap-3 mt-1.5 mb-1">
         <div className="flex flex-col min-w-0 flex-1">
           <span className="text-sm font-bold text-white truncate" title={stats.current_file_name}>
-            {stats.current_file_name || t.statusReady}
+            {stats.current_file_name || (status === "idle" ? (lang === "tr" ? "Kuyruk Boş / Beklemede" : "Idle / Queue Empty") : t.statusReady)}
           </span>
-          <span className="text-[11px] text-slate-400 font-mono truncate mt-0.5" title={`${source || ""} → ${destination || ""}`}>
-            {source ? source : "D:\\Games\\Installers\\"} → {destination ? destination : "E:\\Backups\\Games\\"}
+          <span className="text-[11px] text-slate-400 font-mono truncate mt-0.5" title={source || destination ? `${source} → ${destination}` : ""}>
+            {source && destination
+              ? `${source} → ${destination}`
+              : source
+              ? `${source} → ${lang === "tr" ? "Hedef bekleniyor..." : "Target pending..."}`
+              : destination
+              ? `${lang === "tr" ? "Kuyruk bekleniyor" : "Queue pending"} → ${destination}`
+              : lang === "tr"
+              ? "Aktarım kuyruğu boş — Dosya bekleniyor"
+              : "Transfer queue empty — Ready for files"}
           </span>
         </div>
 
@@ -169,35 +177,52 @@ export const CompactView: React.FC<CompactViewProps> = ({
       {/* ── Bottom Controls Toolbar ── */}
       <div className="flex items-center justify-between pt-2 border-t border-[#172136]">
         <div className="flex items-center gap-2">
-          <button
-            onClick={onPauseToggle}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition cursor-pointer shadow-sm ${
-              status === "paused"
-                ? "bg-emerald-600 hover:bg-emerald-500 text-white"
-                : "bg-blue-600 hover:bg-blue-500 text-white"
-            }`}
-          >
-            {status === "paused" ? <Play className="w-3.5 h-3.5 fill-current" /> : <Pause className="w-3.5 h-3.5 fill-current" />}
-            <span>{status === "paused" ? t.resume : t.pause}</span>
-          </button>
+          {status === "transferring" || status === "paused" ? (
+            <>
+              <button
+                onClick={onPauseToggle}
+                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition cursor-pointer shadow-sm ${
+                  status === "paused"
+                    ? "bg-emerald-600 hover:bg-emerald-500 text-white"
+                    : "bg-blue-600 hover:bg-blue-500 text-white"
+                }`}
+              >
+                {status === "paused" ? <Play className="w-3.5 h-3.5 fill-current" /> : <Pause className="w-3.5 h-3.5 fill-current" />}
+                <span>{status === "paused" ? t.resume : t.pause}</span>
+              </button>
 
-          <button
-            onClick={onCancel}
-            title={lang === "tr" ? "Atla" : "Skip"}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-[#121827] hover:bg-[#1a233a] border border-[#1e293b] text-slate-300 hover:text-white text-xs font-medium transition cursor-pointer"
-          >
-            <SkipForward className="w-3.5 h-3.5" />
-            <span>{lang === "tr" ? "Atla" : "Skip"}</span>
-          </button>
+              <button
+                onClick={onCancel}
+                title={lang === "tr" ? "Atla" : "Skip"}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-[#121827] hover:bg-[#1a233a] border border-[#1e293b] text-slate-300 hover:text-white text-xs font-medium transition cursor-pointer"
+              >
+                <SkipForward className="w-3.5 h-3.5" />
+                <span>{lang === "tr" ? "Atla" : "Skip"}</span>
+              </button>
 
-          <button
-            onClick={onCancel}
-            title={t.cancel}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-[#121827] hover:bg-rose-950/60 border border-[#1e293b] hover:border-rose-900 text-slate-300 hover:text-rose-400 text-xs font-medium transition cursor-pointer"
-          >
-            <X className="w-3.5 h-3.5" />
-            <span>{t.cancel}</span>
-          </button>
+              <button
+                onClick={onCancel}
+                title={t.cancel}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-[#121827] hover:bg-rose-950/60 border border-[#1e293b] hover:border-rose-900 text-slate-300 hover:text-rose-400 text-xs font-medium transition cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>{t.cancel}</span>
+              </button>
+            </>
+          ) : status === "completed" ? (
+            <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
+              <span>✔ {lang === "tr" ? "Aktarım Tamamlandı" : "Transfer Completed"}</span>
+            </span>
+          ) : status === "canceled" ? (
+            <span className="text-xs font-semibold text-rose-400 flex items-center gap-1.5">
+              <span>✕ {lang === "tr" ? "Aktarım İptal Edildi" : "Transfer Canceled"}</span>
+            </span>
+          ) : (
+            <div className="flex items-center gap-1.5 text-xs text-slate-400 font-medium">
+              <span className="w-2 h-2 rounded-full bg-slate-500" />
+              <span>{lang === "tr" ? "Kuyruk Boş — Beklemede" : "Idle — Ready for transfer"}</span>
+            </div>
+          )}
         </div>
 
         <button
