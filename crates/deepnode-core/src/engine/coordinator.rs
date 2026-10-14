@@ -27,6 +27,8 @@ pub struct TransferCoordinator {
     event_tx: mpsc::UnboundedSender<EngineEvent>,
     pause_flag: Arc<AtomicBool>,
     cancel_flag: Arc<AtomicBool>,
+    skip_flag: Arc<AtomicBool>,
+    skipped_ids: Option<Arc<std::sync::Mutex<std::collections::HashSet<u64>>>>,
     conflict_hook: Option<Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<ConflictResolutionChoice>>>>>,
     destination_dir: Option<std::path::PathBuf>,
 }
@@ -45,9 +47,20 @@ impl TransferCoordinator {
             event_tx,
             pause_flag,
             cancel_flag,
+            skip_flag: Arc::new(AtomicBool::new(false)),
+            skipped_ids: None,
             conflict_hook: None,
             destination_dir: None,
         }
+    }
+
+    pub fn set_skip_controls(
+        &mut self,
+        skip_flag: Arc<AtomicBool>,
+        skipped_ids: Option<Arc<std::sync::Mutex<std::collections::HashSet<u64>>>>,
+    ) {
+        self.skip_flag = skip_flag;
+        self.skipped_ids = skipped_ids;
     }
 
     pub fn set_conflict_hook(
@@ -75,9 +88,12 @@ impl TransferCoordinator {
 
     fn mark_remaining_canceled(&mut self, from_idx: usize) {
         for i in from_idx..self.items.len() {
-            if self.items[i].status == FileItemStatus::Pending || self.items[i].status == FileItemStatus::Copying {
+            if self.items[i].status == FileItemStatus::Copying {
                 self.items[i].status = FileItemStatus::Canceled;
                 self.cleanup_cancelled_item(&self.items[i].dst_path);
+            } else if self.items[i].status == FileItemStatus::Pending {
+                self.items[i].status = FileItemStatus::Canceled;
+                // Never delete Pending files - they were never written to by this transfer!
             }
         }
     }
@@ -129,6 +145,29 @@ impl TransferCoordinator {
                 self.mark_remaining_canceled(idx);
                 let _ = self.event_tx.send(EngineEvent::TransferCanceled);
                 return Err(TransferError::Canceled);
+            }
+
+            let is_skipped = {
+                let id = self.items[idx].id;
+                let in_set = if let Some(ref s_ids) = self.skipped_ids {
+                    s_ids.lock().unwrap_or_else(|e| e.into_inner()).contains(&id)
+                } else {
+                    false
+                };
+                in_set || self.items[idx].status == FileItemStatus::Skipped
+            };
+
+            if is_skipped {
+                let mut item = self.items[idx].clone();
+                item.status = FileItemStatus::Skipped;
+                self.items[idx] = item.clone();
+                stats.skipped_files += 1;
+                let _ = self.event_tx.send(EngineEvent::FileSkipped {
+                    item: item.clone(),
+                    reason: "Skipped by user".to_string(),
+                });
+                let _ = self.event_tx.send(EngineEvent::ProgressUpdated(stats.clone()));
+                continue;
             }
 
             let mut item = self.items[idx].clone();
@@ -298,6 +337,18 @@ impl TransferCoordinator {
                     self.mark_remaining_canceled(idx + 1);
                     let _ = self.event_tx.send(EngineEvent::TransferCanceled);
                     return Err(TransferError::Canceled);
+                }
+                Err(TransferError::SkippedByUser) => {
+                    self.cleanup_cancelled_item(&item.dst_path);
+                    item.status = FileItemStatus::Skipped;
+                    self.items[idx] = item.clone();
+                    stats.skipped_files += 1;
+                    let _ = self.event_tx.send(EngineEvent::FileSkipped {
+                        item: item.clone(),
+                        reason: "Skipped by user".to_string(),
+                    });
+                    let _ = self.event_tx.send(EngineEvent::ProgressUpdated(stats.clone()));
+                    continue;
                 }
                 Ok(bytes_transferred) => {
                     // Post-copy verification
@@ -496,19 +547,20 @@ impl TransferCoordinator {
 
             let mut hasher = MultiHasher::new(self.config.hash_algorithm);
 
-            let res = copier.copy_file(
+            let res = copier.copy_file_with_skip(
                 &actual_src_path,
                 &item.dst_path,
                 Some(&mut hasher),
                 pause,
                 cancel,
+                Some(Arc::clone(&self.skip_flag)),
                 move |file_copied| {
                     let mut sp = progress_state_clone.lock();
                     let current_total = base_transferred + file_copied;
                     sp.speed_calc.record_progress(current_total);
 
                     let now = Instant::now();
-                    if now.duration_since(sp.last_emit) >= Duration::from_millis(50) {
+                    if now.duration_since(sp.last_emit) >= Duration::from_millis(100) {
                         sp.last_emit = now;
                         let cur_speed = sp.speed_calc.current_speed();
                         let avg_speed = sp.speed_calc.average_speed(current_total);
@@ -571,6 +623,10 @@ impl TransferCoordinator {
                 Err(TransferError::Canceled) => {
                     self.cleanup_cancelled_item(&item.dst_path);
                     return Err(TransferError::Canceled);
+                }
+                Err(TransferError::SkippedByUser) => {
+                    self.cleanup_cancelled_item(&item.dst_path);
+                    return Err(TransferError::SkippedByUser);
                 }
                 Err(TransferError::FileLocked) if self.config.use_vss_for_locked && actual_src_path == item.src_path => {
                     warn!("File is locked: {:?}. Attempting VSS shadow copy...", item.src_path);

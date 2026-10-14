@@ -66,17 +66,10 @@ export interface ConflictInfo {
   dst_modified: number;
 }
 
-export interface ItemPreview {
-  path: string;
-  name: string;
-  size: number;
-  is_dir: boolean;
-}
-
 export interface ScanPreviewResult {
   total_files: number;
   total_bytes: number;
-  items: ItemPreview[];
+  items: FileItem[];
 }
 
 export interface LaunchArgs {
@@ -102,5 +95,6 @@ export interface CurrentTransferState {
   stats: TransferStats;
   files: FileItem[];
   launch_args: LaunchArgs;
+  active_conflict?: ConflictInfo | null;
 }
 

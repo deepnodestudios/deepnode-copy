@@ -13,6 +13,17 @@ body {
   -webkit-user-select: none;
 }
 
+/* Custom titlebar and window dragging */
+[data-tauri-drag-region], [data-tauri-drag-region="deep"] {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+button, input, select, textarea, a, [role="button"], [data-tauri-drag-region="false"], .no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

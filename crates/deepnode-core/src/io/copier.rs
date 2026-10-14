@@ -35,9 +35,26 @@ impl FileCopier {
         &self,
         src_path: &Path,
         dst_path: &Path,
+        hasher: Option<&mut MultiHasher>,
+        pause_flag: Arc<AtomicBool>,
+        cancel_flag: Arc<AtomicBool>,
+        progress_cb: F,
+    ) -> Result<u64>
+    where
+        F: Fn(u64) + Send + Sync + 'static,
+    {
+        self.copy_file_with_skip(src_path, dst_path, hasher, pause_flag, cancel_flag, None, progress_cb)
+    }
+
+    /// High performance copy of a single file with on-the-fly hash calculation, pause/cancel support, and individual file skipping.
+    pub fn copy_file_with_skip<F>(
+        &self,
+        src_path: &Path,
+        dst_path: &Path,
         mut hasher: Option<&mut MultiHasher>,
         pause_flag: Arc<AtomicBool>,
         cancel_flag: Arc<AtomicBool>,
+        skip_flag: Option<Arc<AtomicBool>>,
         progress_cb: F,
     ) -> Result<u64>
     where
@@ -78,6 +95,18 @@ impl FileCopier {
                 return Err(TransferError::Canceled);
             }
 
+            // Check file skip
+            if let Some(ref skip) = skip_flag {
+                if skip.load(Ordering::SeqCst) {
+                    skip.store(false, Ordering::SeqCst);
+                    self.buffer_pool.release(buffer);
+                    drop(dst_file);
+                    drop(src_file);
+                    cleanup_cancelled_file(dst_path);
+                    return Err(TransferError::SkippedByUser);
+                }
+            }
+
             // Handle pause state
             while pause_flag.load(Ordering::Relaxed) {
                 if cancel_flag.load(Ordering::SeqCst) {
@@ -86,6 +115,16 @@ impl FileCopier {
                     drop(src_file);
                     cleanup_cancelled_file(dst_path);
                     return Err(TransferError::Canceled);
+                }
+                if let Some(ref skip) = skip_flag {
+                    if skip.load(Ordering::SeqCst) {
+                        skip.store(false, Ordering::SeqCst);
+                        self.buffer_pool.release(buffer);
+                        drop(dst_file);
+                        drop(src_file);
+                        cleanup_cancelled_file(dst_path);
+                        return Err(TransferError::SkippedByUser);
+                    }
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }

@@ -12,7 +12,7 @@ mod dialog;
 use deepnode_core::conflict::policy::ConflictPolicy;
 use deepnode_core::engine::config::{TransferConfig, TransferMode, VerifyMode};
 use deepnode_core::engine::coordinator::TransferCoordinator;
-use deepnode_core::engine::events::{ConflictResolutionChoice, EngineEvent};
+use deepnode_core::engine::events::{ConflictInfo, ConflictResolutionChoice, EngineEvent};
 use deepnode_core::engine::item::{FileItem, FileItemStatus};
 use deepnode_core::engine::on_finish::{OnFinishAction, OnFinishExecutor};
 use deepnode_core::engine::scanner::FileScanner;
@@ -53,16 +53,20 @@ pub struct CurrentTransferState {
     pub stats: TransferStats,
     pub files: Vec<FileItem>,
     pub launch_args: LaunchArgs,
+    pub active_conflict: Option<ConflictInfo>,
 }
 
+#[derive(Clone)]
 pub struct AppState {
-    pause_flag: Arc<AtomicBool>,
-    cancel_flag: Arc<AtomicBool>,
-    last_failed_items: Arc<Mutex<Vec<FileItem>>>,
-    last_config: Arc<Mutex<Option<TransferConfig>>>,
-    db: Arc<Mutex<Option<Database>>>,
-    conflict_sender: Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<ConflictResolutionChoice>>>>,
-    transfer_state: Arc<tokio::sync::Mutex<CurrentTransferState>>,
+    pub pause_flag: Arc<AtomicBool>,
+    pub cancel_flag: Arc<AtomicBool>,
+    pub skip_flag: Arc<AtomicBool>,
+    pub skipped_ids: Arc<std::sync::Mutex<std::collections::HashSet<u64>>>,
+    pub last_failed_items: Arc<Mutex<Vec<FileItem>>>,
+    pub last_config: Arc<Mutex<Option<TransferConfig>>>,
+    pub db: Arc<Mutex<Option<Database>>>,
+    pub conflict_sender: Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<ConflictResolutionChoice>>>>,
+    pub transfer_state: Arc<tokio::sync::Mutex<CurrentTransferState>>,
 }
 
 fn recombine_split_paths(tokens: &[String]) -> Vec<String> {
@@ -243,6 +247,21 @@ async fn set_always_on_top(window: Window, always_on_top: bool) -> Result<(), St
 }
 
 #[tauri::command]
+async fn set_conflict_mode(window: Window, active: bool, is_compact: bool) -> Result<(), String> {
+    log_engine(&format!("set_conflict_mode: active={}, is_compact={}", active, is_compact));
+    if is_compact {
+        let size = if active {
+            tauri::LogicalSize::new(580.0, 420.0)
+        } else {
+            tauri::LogicalSize::new(580.0, 190.0)
+        };
+        window.set_size(size).map_err(|e| e.to_string())
+    } else {
+        Ok(())
+    }
+}
+
+#[tauri::command]
 async fn toggle_compact_mode(window: Window, compact: bool) -> Result<(), String> {
     let size = if compact {
         tauri::LogicalSize::new(580.0, 190.0)
@@ -282,19 +301,30 @@ async fn resume_transfer(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-async fn cancel_transfer(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    log_engine("cancel_transfer command invoked");
-    state.cancel_flag.store(true, Ordering::SeqCst);
-    {
-        let mut cur = state.transfer_state.lock().await;
-        cur.status = "canceled".to_string();
-        for file in cur.files.iter_mut() {
-            if file.status == FileItemStatus::Copying || file.status == FileItemStatus::Pending {
-                file.status = FileItemStatus::Canceled;
+fn cleanup_partial_transfers_sync(state: &AppState) {
+    let files = {
+        let Ok(guard) = state.transfer_state.try_lock() else {
+            return;
+        };
+        guard.files.clone()
+    };
+    for file in files {
+        if file.status == FileItemStatus::Copying || (file.status != FileItemStatus::Completed && file.bytes_transferred > 0) {
+            if file.dst_path.exists() {
+                log_engine(&format!("Cleaning up incomplete partial file: {:?}", file.dst_path));
+                let ok = deepnode_core::io::copier::cleanup_cancelled_file_and_empty_parents(&file.dst_path, None);
+                log_engine(&format!("Incomplete file {:?} deletion result: {}", file.dst_path, ok));
             }
         }
     }
+}
+
+#[tauri::command]
+async fn cancel_transfer(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    log_engine("cancel_transfer command invoked: signaling cancel_flag and cleaning up partial files");
+    state.cancel_flag.store(true, Ordering::SeqCst);
+
+    // Unblock any conflict sender
     let mut lock = state.conflict_sender.lock().await;
     if let Some(tx) = lock.take() {
         let _ = tx.send(ConflictResolutionChoice {
@@ -302,8 +332,148 @@ async fn cancel_transfer(app: AppHandle, state: State<'_, AppState>) -> Result<(
             apply_to_all: false,
         });
     }
+
+    // Collect all incomplete files that were in-flight
+    let mut files_to_clean: Vec<PathBuf> = Vec::new();
+    {
+        let mut cur = state.transfer_state.lock().await;
+        cur.status = "canceled".to_string();
+        cur.active_conflict = None;
+        for file in cur.files.iter_mut() {
+            if file.status == FileItemStatus::Copying || (file.status != FileItemStatus::Completed && file.bytes_transferred > 0) {
+                files_to_clean.push(file.dst_path.clone());
+                file.status = FileItemStatus::Canceled;
+            } else if file.status == FileItemStatus::Pending {
+                file.status = FileItemStatus::Canceled;
+            }
+        }
+    }
+
+    // Wait 250ms for worker thread to exit copy loop and close Win32 handles
+    tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+
+    // Delete incomplete partial files (Completed files are NEVER touched!)
+    for path in &files_to_clean {
+        if path.exists() {
+            log_engine(&format!("Explicit cleanup of partial file on cancel: {:?}", path));
+            let deleted = deepnode_core::io::copier::cleanup_cancelled_file_and_empty_parents(path, None);
+            log_engine(&format!("File {:?} deletion result: {}", path, deleted));
+        }
+    }
+
     let _ = app.emit("engine_event", &EngineEvent::TransferCanceled);
+    for (_, window) in app.webview_windows() {
+        let _ = window.destroy();
+    }
+    std::process::exit(0);
+}
+
+#[tauri::command]
+async fn start_dragging(window: Window) -> Result<(), String> {
+    window.start_dragging().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn skip_current_file(state: State<'_, AppState>) -> Result<(), String> {
+    log_engine("skip_current_file command invoked");
+    state.skip_flag.store(true, Ordering::SeqCst);
     Ok(())
+}
+
+#[tauri::command]
+async fn skip_files_by_id(app: AppHandle, state: State<'_, AppState>, ids: Vec<u64>) -> Result<(), String> {
+    log_engine(&format!("skip_files_by_id invoked for {:?}", ids));
+    {
+        let mut lock = state.skipped_ids.lock().unwrap_or_else(|e| e.into_inner());
+        for id in &ids {
+            lock.insert(*id);
+        }
+    }
+    {
+        let mut cur = state.transfer_state.lock().await;
+        for file in cur.files.iter_mut() {
+            if ids.contains(&file.id) {
+                if file.status == FileItemStatus::Copying {
+                    state.skip_flag.store(true, Ordering::SeqCst);
+                } else if file.status == FileItemStatus::Pending {
+                    file.status = FileItemStatus::Skipped;
+                    let _ = app.emit("engine_event", &EngineEvent::FileSkipped {
+                        item: file.clone(),
+                        reason: "Skipped by user".to_string(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn remove_queued_files(app: AppHandle, state: State<'_, AppState>, ids: Vec<u64>) -> Result<(), String> {
+    log_engine(&format!("remove_queued_files invoked for {:?}", ids));
+    {
+        let mut lock = state.skipped_ids.lock().unwrap_or_else(|e| e.into_inner());
+        for id in &ids {
+            lock.insert(*id);
+        }
+    }
+    {
+        let mut cur = state.transfer_state.lock().await;
+        cur.files.retain(|f| !ids.contains(&f.id) || f.status == FileItemStatus::Completed);
+        cur.stats.total_files = cur.files.len();
+        cur.stats.total_bytes = cur.files.iter().map(|f| f.size).sum();
+        let _ = app.emit("engine_event", &EngineEvent::ProgressUpdated(cur.stats.clone()));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn show_in_folder(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let clean = clean_path_str(&path);
+        let p = std::path::Path::new(&clean);
+        if p.is_file() {
+            std::process::Command::new("explorer")
+                .args(["/select,", &clean])
+                .creation_flags(0x08000000)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+        } else {
+            std::process::Command::new("explorer")
+                .arg(&clean)
+                .creation_flags(0x08000000)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
+#[tauri::command]
+fn open_folder(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let clean = clean_path_str(&path);
+        std::process::Command::new("explorer")
+            .arg(&clean)
+            .creation_flags(0x08000000)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -335,15 +505,7 @@ async fn pick_destination_folder() -> Result<Option<String>, String> {
 pub struct ScanPreviewResult {
     pub total_files: usize,
     pub total_bytes: u64,
-    pub items: Vec<ScanItemPreview>,
-}
-
-#[derive(serde::Serialize)]
-pub struct ScanItemPreview {
-    pub path: String,
-    pub name: String,
-    pub size: u64,
-    pub is_dir: bool,
+    pub items: Vec<FileItem>,
 }
 
 #[tauri::command]
@@ -352,23 +514,11 @@ async fn scan_items_preview(sources: Vec<String>) -> Result<ScanPreviewResult, S
     let scanned = FileScanner::scan(&sources, &dummy_dest).map_err(|e| e.to_string())?;
     let total_files = scanned.len();
     let total_bytes = scanned.iter().map(|i| i.size).sum();
-    let mut items = Vec::new();
-
-    for item in scanned {
-        let path = item.src_path.to_string_lossy().to_string();
-        let name = item.src_path.file_name().unwrap_or_default().to_string_lossy().to_string();
-        items.push(ScanItemPreview {
-            path,
-            name,
-            size: item.size,
-            is_dir: false,
-        });
-    }
 
     Ok(ScanPreviewResult {
         total_files,
         total_bytes,
-        items,
+        items: scanned,
     })
 }
 
@@ -482,6 +632,8 @@ fn spawn_transfer_worker(
 
     state.pause_flag.store(false, Ordering::Relaxed);
     state.cancel_flag.store(false, Ordering::Relaxed);
+    state.skip_flag.store(false, Ordering::SeqCst);
+    state.skipped_ids.lock().unwrap_or_else(|e| e.into_inner()).clear();
 
     let pause_flag = Arc::clone(&state.pause_flag);
     let cancel_flag = Arc::clone(&state.cancel_flag);
@@ -498,6 +650,7 @@ fn spawn_transfer_worker(
         pause_flag,
         Arc::clone(&cancel_flag),
     );
+    coordinator.set_skip_controls(Arc::clone(&state.skip_flag), Some(Arc::clone(&state.skipped_ids)));
     if let Some(dest) = destination {
         coordinator.set_destination_dir(dest);
     }
@@ -520,10 +673,15 @@ fn spawn_transfer_worker(
             {
                 let mut cur = ts_for_events.lock().await;
                 match &event {
+                    EngineEvent::ConflictDetected(info) => {
+                        log_engine(&format!("Event loop: ConflictDetected for {}", info.filename));
+                        cur.active_conflict = Some(info.clone());
+                    }
                     EngineEvent::ProgressUpdated(stats) => {
                         cur.stats = stats.clone();
                     }
                     EngineEvent::FileStarted(item) => {
+                        cur.active_conflict = None;
                         cur.stats.current_file_name = item.relative_path.to_string_lossy().to_string();
                         cur.stats.current_file_size = item.size;
                         if let Some(pos) = cur.files.iter_mut().find(|f| f.id == item.id) {
@@ -538,17 +696,20 @@ fn spawn_transfer_worker(
                         }
                     }
                     EngineEvent::FileCompleted(item) => {
+                        cur.active_conflict = None;
                         if let Some(pos) = cur.files.iter_mut().find(|f| f.id == item.id) {
                             pos.status = FileItemStatus::Completed;
                             pos.bytes_transferred = item.size;
                         }
                     }
                     EngineEvent::FileSkipped { item, .. } => {
+                        cur.active_conflict = None;
                         if let Some(pos) = cur.files.iter_mut().find(|f| f.id == item.id) {
                             pos.status = FileItemStatus::Skipped;
                         }
                     }
                     EngineEvent::FileFailed { item, .. } => {
+                        cur.active_conflict = None;
                         if let Some(pos) = cur.files.iter_mut().find(|f| f.id == item.id) {
                             pos.status = FileItemStatus::Failed;
                         }
@@ -560,6 +721,7 @@ fn spawn_transfer_worker(
                         cur.status = "transferring".to_string();
                     }
                     EngineEvent::TransferCompleted(stats) => {
+                        cur.active_conflict = None;
                         let is_canc = cancel_for_events.load(Ordering::SeqCst) || cur.status == "canceled";
                         if !is_canc {
                             cur.status = "completed".to_string();
@@ -572,6 +734,7 @@ fn spawn_transfer_worker(
                         continue;
                     }
                     EngineEvent::TransferCanceled => {
+                        cur.active_conflict = None;
                         cur.status = "canceled".to_string();
                         for file in cur.files.iter_mut() {
                             if file.status == FileItemStatus::Copying || file.status == FileItemStatus::Pending {
@@ -580,6 +743,7 @@ fn spawn_transfer_worker(
                         }
                     }
                     EngineEvent::TransferFailed(_) => {
+                        cur.active_conflict = None;
                         cur.status = "failed".to_string();
                     }
                     _ => {}
@@ -753,17 +917,10 @@ async fn start_transfer(
         cur.files = items.clone();
         cur.stats.total_files = items.len();
         cur.stats.total_bytes = items.iter().map(|i| i.size).sum();
+        cur.active_conflict = None;
     }
 
-    let state_arc = Arc::new(AppState {
-        pause_flag: Arc::clone(&state.pause_flag),
-        cancel_flag: Arc::clone(&state.cancel_flag),
-        last_failed_items: Arc::clone(&state.last_failed_items),
-        last_config: Arc::clone(&state.last_config),
-        db: Arc::clone(&state.db),
-        conflict_sender: Arc::clone(&state.conflict_sender),
-        transfer_state: Arc::clone(&state.transfer_state),
-    });
+    let state_arc = Arc::new((*state).clone());
 
     spawn_transfer_worker(
         app,
@@ -788,15 +945,7 @@ async fn retry_failed_transfer(
     }
 
     let config = config_opt.unwrap_or_default();
-    let state_arc = Arc::new(AppState {
-        pause_flag: Arc::clone(&state.pause_flag),
-        cancel_flag: Arc::clone(&state.cancel_flag),
-        last_failed_items: Arc::clone(&state.last_failed_items),
-        last_config: Arc::clone(&state.last_config),
-        db: Arc::clone(&state.db),
-        conflict_sender: Arc::clone(&state.conflict_sender),
-        transfer_state: Arc::clone(&state.transfer_state),
-    });
+    let state_arc = Arc::new((*state).clone());
 
     spawn_transfer_worker(app, state_arc, failed, config, "do_nothing".to_string(), None)?;
     Ok(())
@@ -808,6 +957,11 @@ async fn resolve_conflict(
     action: String,
     apply_to_all: bool,
 ) -> Result<(), String> {
+    log_engine(&format!("resolve_conflict invoked: action={}, apply_to_all={}", action, apply_to_all));
+    {
+        let mut cur = state.transfer_state.lock().await;
+        cur.active_conflict = None;
+    }
     let mut lock = state.conflict_sender.lock().await;
     if let Some(tx) = lock.take() {
         let _ = tx.send(ConflictResolutionChoice {
@@ -1098,11 +1252,14 @@ fn main() {
         stats: TransferStats::default(),
         files: Vec::new(),
         launch_args: launch_args.clone(),
+        active_conflict: None,
     };
 
     let shared_state = Arc::new(AppState {
         pause_flag: Arc::new(AtomicBool::new(false)),
         cancel_flag: Arc::new(AtomicBool::new(false)),
+        skip_flag: Arc::new(AtomicBool::new(false)),
+        skipped_ids: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         last_failed_items: Arc::new(Mutex::new(Vec::new())),
         last_config: Arc::new(Mutex::new(None)),
         db: Arc::new(Mutex::new(db_instance)),
@@ -1117,15 +1274,7 @@ fn main() {
 
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         tauri::Builder::default()
-            .manage(AppState {
-                pause_flag: Arc::clone(&shared_state.pause_flag),
-                cancel_flag: Arc::clone(&shared_state.cancel_flag),
-                last_failed_items: Arc::clone(&shared_state.last_failed_items),
-                last_config: Arc::clone(&shared_state.last_config),
-                db: Arc::clone(&shared_state.db),
-                conflict_sender: Arc::clone(&shared_state.conflict_sender),
-                transfer_state: Arc::clone(&shared_state.transfer_state),
-            })
+            .manage((*shared_state).clone())
             .setup(move |app| {
                 log_engine("tauri setup hook entered!");
                 let windows = app.webview_windows();
@@ -1197,6 +1346,7 @@ fn main() {
                                 cur.files = items_clone.clone();
                                 cur.stats.total_files = items_clone.len();
                                 cur.stats.total_bytes = items_clone.iter().map(|i| i.size).sum();
+                                cur.active_conflict = None;
                             }
                             if let Err(e) = spawn_transfer_worker(
                                 app_handle,
@@ -1218,9 +1368,15 @@ fn main() {
                 if let tauri::WindowEvent::CloseRequested { .. } = event {
                     let state: State<AppState> = window.state();
                     state.cancel_flag.store(true, Ordering::SeqCst);
-                    log_engine("Native CloseRequested received: destroying window and exiting");
-                    let _ = window.destroy();
-                    std::process::exit(0);
+                    log_engine("Native CloseRequested received: stopping and cleaning partial files");
+                    let state_clone = (*state).clone();
+                    let win = window.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(250));
+                        cleanup_partial_transfers_sync(&state_clone);
+                        let _ = win.destroy();
+                        std::process::exit(0);
+                    });
                 }
             })
             .invoke_handler(tauri::generate_handler![
@@ -1233,6 +1389,7 @@ fn main() {
                 resolve_conflict,
                 verify_file,
                 set_always_on_top,
+                set_conflict_mode,
                 toggle_compact_mode,
                 minimize_window,
                 toggle_maximize_window,
@@ -1247,7 +1404,13 @@ fn main() {
                 register_shell_context_menu,
                 open_external_url,
                 start_update_download,
-                install_app_update
+                install_app_update,
+                skip_current_file,
+                skip_files_by_id,
+                remove_queued_files,
+                show_in_folder,
+                open_folder,
+                start_dragging
             ])
             .run(tauri::generate_context!())
     }));

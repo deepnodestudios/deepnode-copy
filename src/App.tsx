@@ -53,6 +53,8 @@ export const App: React.FC = () => {
 
   const t = translations[lang] || translations.tr;
   const isCanceledRef = React.useRef(false);
+  const lastStatsUpdateRef = React.useRef<number>(0);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
 
   // Transfer settings
   const [onFinishAction, setOnFinishAction] = useState("do_nothing");
@@ -91,11 +93,27 @@ export const App: React.FC = () => {
   const updatePreview = async (sources: string[]) => {
     if (sources.length === 0) {
       setStagedPreview(null);
+      setFiles([]);
+      setStats((prev) => ({
+        ...prev,
+        total_files: 0,
+        total_bytes: 0,
+        current_file_name: "",
+        current_file_size: 0,
+      }));
       return;
     }
     try {
       const res = await invoke<ScanPreviewResult>("scan_items_preview", { sources });
       setStagedPreview(res);
+      if (res && res.items) {
+        setFiles(res.items);
+        setStats((prev) => ({
+          ...prev,
+          total_files: res.total_files,
+          total_bytes: res.total_bytes,
+        }));
+      }
     } catch (e) {
       console.error("Preview scan error:", e);
     }
@@ -103,9 +121,57 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     let unlistenFn: (() => void) | null = null;
+    let unlistenDragDrop: (() => void) | null = null;
 
     const setupApp = async () => {
-      // 1. Listen for real-time engine events from Tauri Rust backend FIRST
+      // 0. Listen for native OS drag & drop events from Windows Explorer
+      try {
+        const appWin = getCurrentWindow();
+        unlistenDragDrop = await appWin.onDragDropEvent((event) => {
+          if (event.payload.type === "enter" || event.payload.type === "over") {
+            setIsDraggingOver(true);
+          } else if (event.payload.type === "leave") {
+            setIsDraggingOver(false);
+          } else if (event.payload.type === "drop") {
+            setIsDraggingOver(false);
+            const dropped = event.payload.paths;
+            if (dropped && dropped.length > 0) {
+              // Check if dropped onto destination input
+              const pos = event.payload.position;
+              let droppedOnDestination = false;
+              if (pos) {
+                const x = pos.x / (window.devicePixelRatio || 1);
+                const y = pos.y / (window.devicePixelRatio || 1);
+                const elem = document.elementFromPoint(x, y);
+                if (elem && elem.closest('[data-drop-target="destination"]')) {
+                  droppedOnDestination = true;
+                  setDestination(dropped[0]);
+                }
+              }
+
+              if (!droppedOnDestination) {
+                setTransferStatus((cur) => {
+                  if (cur === "completed" || cur === "canceled") {
+                    setFiles([]);
+                    return "idle";
+                  }
+                  return cur;
+                });
+
+                setStagedSources((prev) => {
+                  const updated = Array.from(new Set([...prev, ...dropped]));
+                  updatePreview(updated);
+                  return updated;
+                });
+              }
+            }
+          }
+        });
+      } catch (dragErr) {
+        console.error("Error setting onDragDropEvent:", dragErr);
+      }
+
+      // 1. Listen for real-time engine events from Tauri Rust backend
       try {
         unlistenFn = await listen<EngineEvent>("engine_event", (event) => {
           const data = event.payload;
@@ -132,23 +198,24 @@ export const App: React.FC = () => {
               }
               break;
 
-            case "ProgressUpdated":
-              setStats(data.payload);
-              setSpeedHistory((prev) => {
-                const speedMb = data.payload.current_speed_bps / 1_048_576;
-                const updated = [...prev, speedMb];
-                return updated.length > 50 ? updated.slice(updated.length - 50) : updated;
-              });
+            case "ProgressUpdated": {
+              const now = performance.now();
+              if (now - lastStatsUpdateRef.current >= 80) {
+                lastStatsUpdateRef.current = now;
+                setStats(data.payload);
+                setSpeedHistory((prev) => {
+                  const speedMb = data.payload.current_speed_bps / 1_048_576;
+                  const updated = [...prev, speedMb];
+                  return updated.length > 50 ? updated.slice(updated.length - 50) : updated;
+                });
+              }
               break;
+            }
 
             case "FileProgress":
-              setFiles((prev) =>
-                prev.map((f) =>
-                  f.id === data.payload.id
-                    ? { ...f, bytes_transferred: data.payload.transferred, status: "copying" }
-                    : f
-                )
-              );
+              // Performance optimization: Live file progress is displayed using
+              // stats.current_file_transferred and stats.overall_percentage.
+              // Omitting per-chunk full table re-renders prevents UI freezing on right-click context menu.
               break;
 
             case "FileStarted":
@@ -232,6 +299,7 @@ export const App: React.FC = () => {
                 message: "Transfer canceled by user",
                 level: "info",
               });
+              handleCloseApp();
               break;
 
             case "TransferFailed":
@@ -280,6 +348,9 @@ export const App: React.FC = () => {
           if (curState.launch_args.destination) {
             setDestination(curState.launch_args.destination);
           }
+          if (curState.active_conflict) {
+            setActiveConflict(curState.active_conflict);
+          }
           return;
         }
 
@@ -322,7 +393,16 @@ export const App: React.FC = () => {
                     "",
                   current_file_size: prev.current_file_size || init.items[0]?.size || 0,
                 }));
-                setFiles(init.items);
+                setFiles((prev) => {
+                  if (prev.length === 0) return init.items;
+                  return init.items.map((newItem) => {
+                    const existing = prev.find((p) => p.id === newItem.id);
+                    if (existing && existing.status !== "pending") {
+                      return existing;
+                    }
+                    return newItem;
+                  });
+                });
               }
             } catch (err) {
               setTransferStatus("failed");
@@ -339,8 +419,17 @@ export const App: React.FC = () => {
 
     return () => {
       if (unlistenFn) unlistenFn();
+      if (unlistenDragDrop) unlistenDragDrop();
     };
   }, []);
+
+  useEffect(() => {
+    if (activeConflict) {
+      if (isCompact) {
+        invoke("set_conflict_mode", { active: true, isCompact: true }).catch(() => {});
+      }
+    }
+  }, [activeConflict, isCompact]);
 
   const handleAddFiles = async () => {
     try {
@@ -392,7 +481,7 @@ export const App: React.FC = () => {
   };
 
   const handleStartTransfer = async (mode: "copy" | "move", overridePolicy?: string) => {
-    if (stagedSources.length === 0) {
+    if (stagedSources.length === 0 && files.length === 0) {
       alert(t.noFilesFound);
       return;
     }
@@ -405,15 +494,14 @@ export const App: React.FC = () => {
       setDestination(picked);
     }
 
-    setIsCompact(true);
-    invoke("toggle_compact_mode", { compact: true }).catch(() => {});
     setTransferStatus("transferring");
-    setFiles([]);
     setSpeedHistory([]);
 
     try {
+      const sourcesToTransfer = stagedSources.length > 0 ? stagedSources : files.map((f) => f.src_path);
+
       const init = await invoke<StartTransferResult>("start_transfer", {
-        sources: stagedSources,
+        sources: sourcesToTransfer,
         destination: target,
         mode,
         verifyMode,
@@ -479,13 +567,6 @@ export const App: React.FC = () => {
   const handleCancel = async () => {
     isCanceledRef.current = true;
     setTransferStatus("canceled");
-    setFiles((prev) =>
-      prev.map((f) =>
-        f.status === "copying" || f.status === "pending"
-          ? { ...f, status: "canceled" }
-          : f
-      )
-    );
     setStats((prev) => ({
       ...prev,
       current_speed_bps: 0,
@@ -495,6 +576,62 @@ export const App: React.FC = () => {
       await invoke("cancel_transfer");
     } catch (e) {
       console.error(e);
+    }
+    // As explicitly requested by user: clicking cancel aborts and closes the window
+    await handleCloseApp();
+  };
+
+  const handleSkipCurrent = async () => {
+    try {
+      await invoke("skip_current_file");
+    } catch (e) {
+      console.error("skip_current_file error:", e);
+    }
+  };
+
+  const handleSkipFiles = async (ids: number[]) => {
+    try {
+      await invoke("skip_files_by_id", { ids });
+      setFiles((prev) =>
+        prev.map((f) => (ids.includes(f.id) ? { ...f, status: "skipped" } : f))
+      );
+    } catch (e) {
+      console.error("skip_files_by_id error:", e);
+    }
+  };
+
+  const handleRemoveQueued = async (ids: number[]) => {
+    if (!isTransferring) {
+      setFiles((prev) => {
+        const remaining = prev.filter((f) => !ids.includes(f.id));
+        const total_files = remaining.length;
+        const total_bytes = remaining.reduce((acc, f) => acc + f.size, 0);
+        setStats((s) => ({ ...s, total_files, total_bytes }));
+        return remaining;
+      });
+      return;
+    }
+    try {
+      await invoke("remove_queued_files", { ids });
+      setFiles((prev) => prev.filter((f) => !ids.includes(f.id) || f.status === "completed"));
+    } catch (e) {
+      console.error("remove_queued_files error:", e);
+    }
+  };
+
+  const handleShowInFolder = async (path: string) => {
+    try {
+      await invoke("show_in_folder", { path });
+    } catch (e) {
+      console.error("show_in_folder error:", e);
+    }
+  };
+
+  const handleOpenFolder = async (path: string) => {
+    try {
+      await invoke("open_folder", { path });
+    } catch (e) {
+      console.error("open_folder error:", e);
     }
   };
 
@@ -564,6 +701,9 @@ export const App: React.FC = () => {
     applyToAll: boolean
   ) => {
     setActiveConflict(null);
+    if (isCompact) {
+      invoke("set_conflict_mode", { active: false, isCompact: true }).catch(() => {});
+    }
     try {
       await invoke("resolve_conflict", { action, applyToAll });
     } catch (e) {
@@ -600,7 +740,7 @@ export const App: React.FC = () => {
   };
 
   return (
-    <main className="w-screen h-screen overflow-hidden bg-[#070a12] text-neutral-100 flex flex-col font-sans select-none">
+    <main data-tauri-drag-region="deep" className="w-screen h-screen overflow-hidden bg-[#070a12] text-neutral-100 flex flex-col font-sans select-none">
       {isCompact ? (
         <CompactView
           stats={stats}
@@ -612,6 +752,7 @@ export const App: React.FC = () => {
           onToggleAlwaysOnTop={handleToggleAlwaysOnTop}
           onPauseToggle={handlePauseToggle}
           onCancel={handleCancel}
+          onSkip={handleSkipCurrent}
           onExpand={() => handleToggleCompact(false)}
           onOpenVerify={() => setVerifyModalOpen(true)}
           onOpenAbout={() => setAboutModalOpen(true)}
@@ -630,6 +771,11 @@ export const App: React.FC = () => {
           alwaysOnTop={alwaysOnTop}
           onPauseToggle={handlePauseToggle}
           onCancel={handleCancel}
+          onSkipCurrent={handleSkipCurrent}
+          onSkipFiles={handleSkipFiles}
+          onRemoveQueued={handleRemoveQueued}
+          onShowInFolder={handleShowInFolder}
+          onOpenFolder={handleOpenFolder}
           onRetryFailed={handleRetryFailed}
           onCloseApp={handleCloseApp}
           onMinimizeWindow={handleMinimizeWindow}
@@ -662,6 +808,7 @@ export const App: React.FC = () => {
           onStartTransfer={handleStartTransfer}
           lang={lang}
           onLangChange={setLang}
+          isDraggingOver={isDraggingOver}
         />
       )}
 
@@ -683,7 +830,9 @@ export const App: React.FC = () => {
       <ConflictModal
         conflict={activeConflict}
         onResolve={handleResolveConflict}
+        onCancelTransfer={handleCancel}
         lang={lang}
+        isCompact={isCompact}
       />
 
       {/* Copy & Paste Chooser Modal */}

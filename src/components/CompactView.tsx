@@ -1,5 +1,6 @@
 import React from "react";
 import { Play, Pause, X, ChevronDown, Pin, Zap, Minus, Maximize2, SkipForward } from "lucide-react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TransferStats, TransferStatus } from "../types";
 import { translations, Language } from "../i18n";
 
@@ -33,6 +34,7 @@ interface CompactViewProps {
   onToggleAlwaysOnTop: () => void;
   onPauseToggle: () => void;
   onCancel: () => void;
+  onSkip?: () => void;
   onExpand: () => void;
   onOpenVerify: () => void;
   onOpenAbout: () => void;
@@ -50,6 +52,7 @@ export const CompactView: React.FC<CompactViewProps> = ({
   onToggleAlwaysOnTop,
   onPauseToggle,
   onCancel,
+  onSkip,
   onExpand,
   onCloseApp,
   onMinimizeWindow,
@@ -67,21 +70,33 @@ export const CompactView: React.FC<CompactViewProps> = ({
   const etaStr = formatEta(stats.eta_seconds, lang);
 
   return (
-    <div className="w-full h-full flex flex-col justify-between p-3.5 bg-[#080c16] border border-[#1e293b]/80 rounded-2xl shadow-2xl select-none font-sans text-slate-100 overflow-hidden">
-      {/* ── Top Bar / Drag Region ── */}
-      <div data-tauri-drag-region className="flex items-center justify-between pb-2 border-b border-[#172136] cursor-grab active:cursor-grabbing">
-        <div className="flex items-center gap-2 min-w-0 pointer-events-none">
-          <img src="/branding/app-icon.png" alt="icon" className="w-4 h-4 rounded shadow-sm" />
-          <span className="text-xs font-bold text-slate-100 tracking-tight">DeepNode Copy</span>
-          <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-emerald-950/70 text-emerald-400 border border-emerald-500/40 font-bold font-mono">
+    <div
+      data-tauri-drag-region="deep"
+      onMouseDown={(e) => {
+        if (e.button === 0 && !(e.target as HTMLElement)?.closest('button, input, select, a, [role="button"], textarea')) {
+          getCurrentWindow().startDragging().catch(() => {});
+        }
+      }}
+      className="w-full h-full flex flex-col justify-between p-3.5 bg-[#080c16] border border-[#1e293b]/80 rounded-2xl shadow-2xl select-none font-sans text-slate-100 overflow-hidden cursor-grab active:cursor-grabbing"
+    >
+      {/* ── Top Bar ── */}
+      <div
+        data-tauri-drag-region="deep"
+        className="flex items-center justify-between pb-2 border-b border-[#172136] cursor-grab active:cursor-grabbing"
+      >
+        <div data-tauri-drag-region="deep" className="flex items-center gap-2 min-w-0">
+          <img data-tauri-drag-region="deep" src="/branding/app-icon.png" alt="icon" className="w-4 h-4 rounded shadow-sm" />
+          <span data-tauri-drag-region="deep" className="text-xs font-bold text-slate-100 tracking-tight">DeepNode Copy</span>
+          <span data-tauri-drag-region="deep" className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-emerald-950/70 text-emerald-400 border border-emerald-500/40 font-bold font-mono">
             <Zap className="w-2.5 h-2.5 text-emerald-400" />
             <span>Direct I/O</span>
           </span>
         </div>
 
         {/* Window controls */}
-        <div className="flex items-center gap-1">
+        <div data-tauri-drag-region="false" className="flex items-center gap-1">
           <button
+            data-tauri-drag-region="false"
             onClick={onToggleAlwaysOnTop}
             title={t.alwaysOnTop}
             className={`p-1 rounded-md text-xs transition border cursor-pointer ${
@@ -95,6 +110,7 @@ export const CompactView: React.FC<CompactViewProps> = ({
 
           {onMinimizeWindow && (
             <button
+              data-tauri-drag-region="false"
               onClick={onMinimizeWindow}
               title="Simge Durumuna Küçült"
               className="p-1 rounded-md bg-[#111624] hover:bg-[#1a233a] border border-slate-800 text-slate-400 hover:text-slate-200 transition cursor-pointer"
@@ -104,6 +120,7 @@ export const CompactView: React.FC<CompactViewProps> = ({
           )}
 
           <button
+            data-tauri-drag-region="false"
             onClick={onExpand}
             title={lang === "tr" ? "Pencereyi Genişlet" : "Expand Window"}
             className="p-1 rounded-md bg-[#111624] hover:bg-[#1a233a] border border-slate-800 text-slate-400 hover:text-sky-400 transition cursor-pointer"
@@ -113,6 +130,7 @@ export const CompactView: React.FC<CompactViewProps> = ({
 
           {onCloseApp && (
             <button
+              data-tauri-drag-region="false"
               onClick={onCloseApp}
               title={t.close}
               className="p-1 rounded-md bg-[#111624] hover:bg-rose-950/80 border border-slate-800 text-slate-400 hover:text-rose-400 transition cursor-pointer"
@@ -124,12 +142,12 @@ export const CompactView: React.FC<CompactViewProps> = ({
       </div>
 
       {/* ── Active File & Giant Speed Display ── */}
-      <div className="flex items-center justify-between gap-3 mt-1.5 mb-1">
-        <div className="flex flex-col min-w-0 flex-1">
-          <span className="text-sm font-bold text-white truncate" title={stats.current_file_name}>
+      <div data-tauri-drag-region="deep" className="flex items-center justify-between gap-3 mt-1.5 mb-1 cursor-grab active:cursor-grabbing">
+        <div data-tauri-drag-region="deep" className="flex flex-col min-w-0 flex-1">
+          <span data-tauri-drag-region="deep" className="text-sm font-bold text-white truncate" title={stats.current_file_name}>
             {stats.current_file_name || (status === "idle" ? (lang === "tr" ? "Kuyruk Boş / Beklemede" : "Idle / Queue Empty") : t.statusReady)}
           </span>
-          <span className="text-[11px] text-slate-400 font-mono truncate mt-0.5" title={source || destination ? `${source} → ${destination}` : ""}>
+          <span data-tauri-drag-region="deep" className="text-[11px] text-slate-400 font-mono truncate mt-0.5" title={source || destination ? `${source} → ${destination}` : ""}>
             {source && destination
               ? `${source} → ${destination}`
               : source
@@ -142,17 +160,18 @@ export const CompactView: React.FC<CompactViewProps> = ({
           </span>
         </div>
 
-        <div className="text-right flex-shrink-0 font-mono">
-          <div className="text-lg font-black text-cyan-400 tracking-tight">
+        <div data-tauri-drag-region="deep" className="text-right flex-shrink-0 font-mono">
+          <div data-tauri-drag-region="deep" className="text-lg font-black text-cyan-400 tracking-tight">
             {status === "canceled" ? "0.0 MB/s" : speedDisplay}
           </div>
         </div>
       </div>
 
       {/* ── Gradient Progress Bar ── */}
-      <div className="flex flex-col gap-1.5 my-1">
-        <div className="w-full h-2 bg-[#101626] rounded-full overflow-hidden border border-slate-800/80">
+      <div data-tauri-drag-region="deep" className="flex flex-col gap-1.5 my-1 cursor-grab active:cursor-grabbing">
+        <div data-tauri-drag-region="deep" className="w-full h-2 bg-[#101626] rounded-full overflow-hidden border border-slate-800/80">
           <div
+            data-tauri-drag-region="deep"
             className={`h-full rounded-full transition-all duration-150 ${
               status === "paused"
                 ? "bg-amber-500"
@@ -164,22 +183,23 @@ export const CompactView: React.FC<CompactViewProps> = ({
           />
         </div>
 
-        <div className="flex items-center justify-between text-[11px] font-mono text-slate-300">
-          <span>
-            Transferred: <strong className="text-white font-semibold">{transferredStr}</strong> / {totalStr} ({stats.overall_percentage.toFixed(0)}%)
+        <div data-tauri-drag-region="deep" className="flex items-center justify-between text-[11px] font-mono text-slate-300">
+          <span data-tauri-drag-region="deep">
+            Transferred: <strong data-tauri-drag-region="deep" className="text-white font-semibold">{transferredStr}</strong> / {totalStr} ({stats.overall_percentage.toFixed(0)}%)
           </span>
-          <span className="text-slate-400">
-            ETA: <strong className="text-white font-semibold">{etaStr}</strong> (File {stats.completed_files} / {stats.total_files})
+          <span data-tauri-drag-region="deep" className="text-slate-400">
+            ETA: <strong data-tauri-drag-region="deep" className="text-white font-semibold">{etaStr}</strong> (File {stats.completed_files} / {stats.total_files})
           </span>
         </div>
       </div>
 
       {/* ── Bottom Controls Toolbar ── */}
-      <div className="flex items-center justify-between pt-2 border-t border-[#172136]">
-        <div className="flex items-center gap-2">
+      <div data-tauri-drag-region="deep" className="flex items-center justify-between pt-2 border-t border-[#172136] cursor-grab active:cursor-grabbing">
+        <div data-tauri-drag-region="deep" className="flex items-center gap-2">
           {status === "transferring" || status === "paused" ? (
             <>
               <button
+                data-tauri-drag-region="false"
                 onClick={onPauseToggle}
                 className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition cursor-pointer shadow-sm ${
                   status === "paused"
@@ -191,16 +211,20 @@ export const CompactView: React.FC<CompactViewProps> = ({
                 <span>{status === "paused" ? t.resume : t.pause}</span>
               </button>
 
-              <button
-                onClick={onCancel}
-                title={lang === "tr" ? "Atla" : "Skip"}
-                className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-[#121827] hover:bg-[#1a233a] border border-[#1e293b] text-slate-300 hover:text-white text-xs font-medium transition cursor-pointer"
-              >
-                <SkipForward className="w-3.5 h-3.5" />
-                <span>{lang === "tr" ? "Atla" : "Skip"}</span>
-              </button>
+              {onSkip && (
+                <button
+                  data-tauri-drag-region="false"
+                  onClick={onSkip}
+                  title={lang === "tr" ? "Bu Dosyayı Atla ve Sonrakine Geç" : "Skip this file and proceed to next"}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-[#121827] hover:bg-amber-950/50 border border-[#1e293b] hover:border-amber-600/60 text-slate-300 hover:text-amber-300 text-xs font-medium transition cursor-pointer"
+                >
+                  <SkipForward className="w-3.5 h-3.5" />
+                  <span>{lang === "tr" ? "Atla" : "Skip"}</span>
+                </button>
+              )}
 
               <button
+                data-tauri-drag-region="false"
                 onClick={onCancel}
                 title={t.cancel}
                 className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-[#121827] hover:bg-rose-950/60 border border-[#1e293b] hover:border-rose-900 text-slate-300 hover:text-rose-400 text-xs font-medium transition cursor-pointer"
@@ -210,15 +234,15 @@ export const CompactView: React.FC<CompactViewProps> = ({
               </button>
             </>
           ) : status === "completed" ? (
-            <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
+            <span data-tauri-drag-region="deep" className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
               <span>✔ {lang === "tr" ? "Aktarım Tamamlandı" : "Transfer Completed"}</span>
             </span>
           ) : status === "canceled" ? (
-            <span className="text-xs font-semibold text-rose-400 flex items-center gap-1.5">
+            <span data-tauri-drag-region="deep" className="text-xs font-semibold text-rose-400 flex items-center gap-1.5">
               <span>✕ {lang === "tr" ? "Aktarım İptal Edildi" : "Transfer Canceled"}</span>
             </span>
           ) : (
-            <div className="flex items-center gap-1.5 text-xs text-slate-400 font-medium">
+            <div data-tauri-drag-region="deep" className="flex items-center gap-1.5 text-xs text-slate-400 font-medium">
               <span className="w-2 h-2 rounded-full bg-slate-500" />
               <span>{lang === "tr" ? "Kuyruk Boş — Beklemede" : "Idle — Ready for transfer"}</span>
             </div>
@@ -226,6 +250,7 @@ export const CompactView: React.FC<CompactViewProps> = ({
         </div>
 
         <button
+          data-tauri-drag-region="false"
           onClick={onExpand}
           className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#121827] hover:bg-[#1a233a] border border-[#1e293b] text-slate-200 text-xs font-semibold transition cursor-pointer shadow-sm"
         >

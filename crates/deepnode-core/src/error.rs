@@ -21,6 +21,9 @@ pub enum TransferError {
     #[error("File skipped by conflict resolution policy")]
     SkippedByPolicy,
 
+    #[error("File skipped by user")]
+    SkippedByUser,
+
     #[error("Transfer operation timed out after {0} seconds")]
     Timeout(u64),
 
