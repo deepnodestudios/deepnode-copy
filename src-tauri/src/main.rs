@@ -245,11 +245,25 @@ async fn set_always_on_top(window: Window, always_on_top: bool) -> Result<(), St
 #[tauri::command]
 async fn toggle_compact_mode(window: Window, compact: bool) -> Result<(), String> {
     let size = if compact {
-        tauri::LogicalSize::new(620.0, 310.0)
+        tauri::LogicalSize::new(580.0, 190.0)
     } else {
-        tauri::LogicalSize::new(720.0, 700.0)
+        tauri::LogicalSize::new(960.0, 640.0)
     };
     window.set_size(size).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn minimize_window(window: Window) -> Result<(), String> {
+    window.minimize().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn toggle_maximize_window(window: Window) -> Result<(), String> {
+    if window.is_maximized().map_err(|e| e.to_string())? {
+        window.unmaximize().map_err(|e| e.to_string())
+    } else {
+        window.maximize().map_err(|e| e.to_string())
+    }
 }
 
 #[tauri::command]
@@ -1220,6 +1234,8 @@ fn main() {
                 verify_file,
                 set_always_on_top,
                 toggle_compact_mode,
+                minimize_window,
+                toggle_maximize_window,
                 pick_source_files,
                 pick_source_folder,
                 pick_destination_folder,

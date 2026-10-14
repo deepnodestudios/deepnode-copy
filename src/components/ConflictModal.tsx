@@ -3,14 +3,15 @@ import {
   AlertTriangle,
   Clock,
   HardDrive,
-  Check,
-  RotateCcw,
+  RotateCw,
+  ArrowRightLeft,
   FastForward,
-  Copy,
+  Split,
+  X,
 } from "lucide-react";
 import { ConflictInfo } from "../types";
 import { formatBytes } from "./CompactView";
-import { Language, translations } from "../i18n";
+import { Language } from "../i18n";
 
 interface ConflictModalProps {
   conflict: ConflictInfo | null;
@@ -24,7 +25,6 @@ export const ConflictModal: React.FC<ConflictModalProps> = ({
   lang,
 }) => {
   const [applyToAll, setApplyToAll] = useState(false);
-  const t = translations[lang] || translations.en;
 
   if (!conflict) return null;
 
@@ -36,137 +36,128 @@ export const ConflictModal: React.FC<ConflictModalProps> = ({
     ? new Date(conflict.dst_modified * 1000).toLocaleString(locale)
     : "-";
 
-  const isSourceNewer = conflict.src_modified > conflict.dst_modified;
-  const isTargetNewer = conflict.dst_modified > conflict.src_modified;
-  const isSameSize = conflict.src_size === conflict.dst_size;
+  const isSourceNewer = conflict.src_modified >= conflict.dst_modified;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in duration-150">
-      <div className="bg-neutral-900 border border-neutral-700/80 rounded-xl max-w-lg w-full shadow-2xl overflow-hidden flex flex-col">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-150">
+      <div className="bg-[#090d16] border border-slate-700/80 rounded-2xl max-w-xl w-full shadow-2xl p-6 text-slate-100 flex flex-col gap-4 font-sans select-none">
         {/* Header */}
-        <div className="flex items-center gap-2.5 px-4 py-3 bg-neutral-950/80 border-b border-neutral-800">
-          <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0" />
-          <div className="flex-1 min-w-0">
-            <h3 className="text-xs font-bold text-neutral-100 uppercase tracking-wide">
-              {t.conflictDetectedTitle}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0" />
+            <h3 className="text-sm font-bold text-white tracking-wide">
+              {lang === "tr" ? "Çakışma Tespit Edildi — Hedef Dosya Zaten Mevcut" : "Conflict Detected — Target File Already Exists"}
             </h3>
-            <p className="text-[11px] text-neutral-400 font-mono truncate" title={conflict.filename}>
-              {conflict.filename}
-            </p>
           </div>
+          <button
+            onClick={() => onResolve("skip", applyToAll)}
+            className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800/60 transition cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
+
+        {/* Subtitle */}
+        <p className="text-xs text-slate-400 -mt-1 leading-relaxed">
+          {lang === "tr"
+            ? "Hedef konumda aynı ada sahip bir dosya zaten bulunuyor. DeepNode Copy bu dosyayı nasıl işlesin:"
+            : "A file with the same name already exists at the destination. Select how DeepNode Copy should handle this file:"}
+        </p>
 
         {/* Comparison Cards */}
-        <div className="p-4 flex flex-col gap-3 text-xs font-sans">
-          <p className="text-neutral-300 text-[11px]">
-            {t.conflictPrompt}
-          </p>
-
-          <div className="grid grid-cols-2 gap-2.5">
-            {/* Source Card */}
-            <div className={`p-3 rounded-lg border flex flex-col gap-1.5 ${
-              isSourceNewer
-                ? "bg-indigo-950/30 border-indigo-700/60"
-                : "bg-neutral-950/40 border-neutral-800"
-            }`}>
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-400">
-                  {t.conflictSourceLabel}
-                </span>
-                {isSourceNewer && (
-                  <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-950 border border-emerald-800 text-emerald-300 font-semibold">
-                    {t.newerBadge}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-1.5 text-neutral-200 font-mono font-bold text-xs">
-                <HardDrive className="w-3.5 h-3.5 text-neutral-400" />
-                <span>{formatBytes(conflict.src_size)}</span>
-              </div>
-              <div className="flex items-center gap-1.5 text-[10px] text-neutral-400 font-mono">
-                <Clock className="w-3 h-3 text-neutral-500" />
-                <span className="truncate">{srcDate}</span>
-              </div>
+        <div className="grid grid-cols-2 gap-3.5 my-1">
+          {/* Source Card */}
+          <div className="p-4 rounded-xl border border-emerald-500/50 bg-emerald-950/20 flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-400">
+                {lang === "tr" ? "KAYNAK DOSYA" : "SOURCE FILE"}
+              </span>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-900/60 border border-emerald-500/50 text-emerald-300">
+                {isSourceNewer ? (lang === "tr" ? "DAHA YENİ" : "NEWER") : (lang === "tr" ? "DAHA ESKİ" : "OLDER")}
+              </span>
             </div>
-
-            {/* Target Card */}
-            <div className={`p-3 rounded-lg border flex flex-col gap-1.5 ${
-              isTargetNewer
-                ? "bg-amber-950/30 border-amber-700/60"
-                : "bg-neutral-950/40 border-neutral-800"
-            }`}>
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">
-                  {t.conflictTargetLabel}
-                </span>
-                {isTargetNewer && (
-                  <span className="text-[9px] px-1 py-0.2 rounded bg-amber-950 border border-amber-800 text-amber-300 font-semibold">
-                    {t.newerBadge}
-                  </span>
-                )}
-                {isSameSize && (
-                  <span className="text-[9px] px-1 py-0.2 rounded bg-neutral-800 text-neutral-300 font-semibold">
-                    {t.sameSizeBadge}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-1.5 text-neutral-200 font-mono font-bold text-xs">
-                <HardDrive className="w-3.5 h-3.5 text-neutral-400" />
-                <span>{formatBytes(conflict.dst_size)}</span>
-              </div>
-              <div className="flex items-center gap-1.5 text-[10px] text-neutral-400 font-mono">
-                <Clock className="w-3 h-3 text-neutral-500" />
-                <span className="truncate">{dstDate}</span>
-              </div>
+            <div className="text-sm font-bold text-white truncate" title={conflict.filename}>
+              {conflict.filename}
+            </div>
+            <div className="flex items-center gap-2 text-xs text-slate-300 font-mono">
+              <HardDrive className="w-3.5 h-3.5 text-slate-400" />
+              <span>{formatBytes(conflict.src_size)}</span>
+            </div>
+            <div className="flex items-center gap-2 text-xs text-slate-400 font-mono">
+              <Clock className="w-3.5 h-3.5 text-slate-500" />
+              <span className="truncate">{srcDate}</span>
             </div>
           </div>
 
-          {/* Apply to All Checkbox */}
-          <label className="flex items-center gap-2 p-2 rounded bg-neutral-950/50 border border-neutral-800 text-xs text-neutral-300 cursor-pointer hover:bg-neutral-950 transition select-none">
-            <input
-              type="checkbox"
-              checked={applyToAll}
-              onChange={(e) => setApplyToAll(e.target.checked)}
-              className="rounded bg-neutral-800 border-neutral-700 text-indigo-500 focus:ring-0 cursor-pointer"
-            />
-            <span>{t.applyToAllConflicts}</span>
-          </label>
+          {/* Target Card */}
+          <div className="p-4 rounded-xl border border-slate-700 bg-slate-900/40 flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                {lang === "tr" ? "HEDEF DOSYA (MEVCUT)" : "TARGET FILE (EXISTING)"}
+              </span>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 border border-slate-600 text-slate-300">
+                {!isSourceNewer ? (lang === "tr" ? "DAHA YENİ" : "NEWER") : (lang === "tr" ? "DAHA ESKİ" : "OLDER")}
+              </span>
+            </div>
+            <div className="text-sm font-bold text-white truncate" title={conflict.filename}>
+              {conflict.filename}
+            </div>
+            <div className="flex items-center gap-2 text-xs text-slate-300 font-mono">
+              <HardDrive className="w-3.5 h-3.5 text-slate-400" />
+              <span>{formatBytes(conflict.dst_size)}</span>
+            </div>
+            <div className="flex items-center gap-2 text-xs text-slate-400 font-mono">
+              <Clock className="w-3.5 h-3.5 text-slate-500" />
+              <span className="truncate">{dstDate}</span>
+            </div>
+          </div>
         </div>
 
-        {/* Action Buttons */}
-        <div className="p-3 bg-neutral-950/80 border-t border-neutral-800 grid grid-cols-2 gap-2 text-xs">
+        {/* 2x2 Action Buttons */}
+        <div className="grid grid-cols-2 gap-3 text-xs font-semibold">
           <button
-            onClick={() => onResolve("overwrite", applyToAll)}
-            className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-rose-700 hover:bg-rose-600 text-white font-semibold transition"
+            onClick={() => onResolve("older", applyToAll)}
+            className="flex items-center justify-center gap-2.5 py-3 px-4 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold transition shadow-lg shadow-blue-600/25 cursor-pointer"
           >
-            <Check className="w-3.5 h-3.5" />
-            <span>{t.conflictOverwrite}</span>
+            <RotateCw className="w-4 h-4" />
+            <span>{lang === "tr" ? "Yalnızca Eskileri Değiştir (Önerilen)" : "Overwrite Older (Recommended)"}</span>
           </button>
 
           <button
-            onClick={() => onResolve("older", applyToAll)}
-            className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-indigo-700 hover:bg-indigo-600 text-white font-semibold transition"
+            onClick={() => onResolve("overwrite", applyToAll)}
+            className="flex items-center justify-center gap-2.5 py-3 px-4 rounded-xl bg-[#121827] hover:bg-[#1a233a] border border-slate-700 text-slate-200 transition cursor-pointer"
           >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span>{t.conflictOlder}</span>
+            <ArrowRightLeft className="w-4 h-4" />
+            <span>{lang === "tr" ? "Tümünün Üzerine Yaz" : "Overwrite All"}</span>
           </button>
 
           <button
             onClick={() => onResolve("rename", applyToAll)}
-            className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-medium transition border border-neutral-700"
+            className="flex items-center justify-center gap-2.5 py-3 px-4 rounded-xl bg-[#121827] hover:bg-[#1a233a] border border-slate-700 text-slate-200 transition cursor-pointer"
           >
-            <Copy className="w-3.5 h-3.5" />
-            <span>{t.conflictRename}</span>
+            <Split className="w-4 h-4" />
+            <span>{lang === "tr" ? "Yeniden Adlandır (İkisini de Tut)" : "Auto-Rename (Keep Both)"}</span>
           </button>
 
           <button
             onClick={() => onResolve("skip", applyToAll)}
-            className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-neutral-800 hover:bg-amber-900/80 text-neutral-300 hover:text-white font-medium transition border border-neutral-700"
+            className="flex items-center justify-center gap-2.5 py-3 px-4 rounded-xl bg-[#121827] hover:bg-[#1a233a] border border-slate-700 text-slate-200 transition cursor-pointer"
           >
-            <FastForward className="w-3.5 h-3.5" />
-            <span>{t.conflictSkip}</span>
+            <FastForward className="w-4 h-4" />
+            <span>{lang === "tr" ? "Bu Dosyayı Atla" : "Skip This File"}</span>
           </button>
         </div>
+
+        {/* Apply to all checkbox */}
+        <label className="flex items-center gap-2.5 pt-1 text-xs text-slate-300 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={applyToAll}
+            onChange={(e) => setApplyToAll(e.target.checked)}
+            className="w-4 h-4 rounded bg-[#121827] border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
+          />
+          <span>{lang === "tr" ? "Bu oturumdaki kalan tüm çakışmalara uygula" : "Apply to all remaining conflicts in this session"}</span>
+        </label>
       </div>
     </div>
   );

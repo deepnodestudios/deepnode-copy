@@ -571,8 +571,36 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleMinimizeWindow = async () => {
+    try {
+      await invoke("minimize_window");
+    } catch (e) {
+      console.error("minimize_window error:", e);
+      try {
+        const win = getCurrentWindow();
+        await win.minimize();
+      } catch (err) {
+        console.error("win.minimize error:", err);
+      }
+    }
+  };
+
+  const handleToggleMaximizeWindow = async () => {
+    try {
+      await invoke("toggle_maximize_window");
+    } catch (e) {
+      console.error("toggle_maximize_window error:", e);
+      try {
+        const win = getCurrentWindow();
+        await win.toggleMaximize();
+      } catch (err) {
+        console.error("win.toggleMaximize error:", err);
+      }
+    }
+  };
+
   return (
-    <main className="w-screen h-screen overflow-hidden bg-neutral-900 text-neutral-100 flex flex-col font-sans">
+    <main className="w-screen h-screen overflow-hidden bg-[#070a12] text-neutral-100 flex flex-col font-sans select-none">
       {isCompact ? (
         <CompactView
           stats={stats}
@@ -588,6 +616,7 @@ export const App: React.FC = () => {
           onOpenVerify={() => setVerifyModalOpen(true)}
           onOpenAbout={() => setAboutModalOpen(true)}
           onCloseApp={handleCloseApp}
+          onMinimizeWindow={handleMinimizeWindow}
           lang={lang}
         />
       ) : (
@@ -603,6 +632,8 @@ export const App: React.FC = () => {
           onCancel={handleCancel}
           onRetryFailed={handleRetryFailed}
           onCloseApp={handleCloseApp}
+          onMinimizeWindow={handleMinimizeWindow}
+          onToggleMaximizeWindow={handleToggleMaximizeWindow}
           onResetToIdle={handleResetToIdle}
           onMinimize={() => handleToggleCompact(true)}
           onToggleAlwaysOnTop={handleToggleAlwaysOnTop}
