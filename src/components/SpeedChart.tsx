@@ -39,8 +39,8 @@ export const SpeedChart: React.FC<SpeedChartProps> = ({ speedHistory, maxSpeed }
 
     // Gradient area
     const gradient = ctx.createLinearGradient(0, 0, 0, height);
-    gradient.addColorStop(0, "rgba(99, 102, 241, 0.4)");
-    gradient.addColorStop(1, "rgba(99, 102, 241, 0.0)");
+    gradient.addColorStop(0, "rgba(56, 189, 248, 0.35)");
+    gradient.addColorStop(1, "rgba(37, 99, 235, 0.0)");
 
     ctx.beginPath();
     ctx.moveTo(0, height);
@@ -67,15 +67,15 @@ export const SpeedChart: React.FC<SpeedChartProps> = ({ speedHistory, maxSpeed }
       else ctx.lineTo(x, y);
     });
 
-    ctx.strokeStyle = "#818cf8";
+    ctx.strokeStyle = "#38bdf8";
     ctx.lineWidth = 2;
     ctx.stroke();
   }, [speedHistory, maxSpeed]);
 
   return (
-    <div className="w-full h-12 bg-neutral-950/70 border border-neutral-800 rounded-md overflow-hidden relative">
+    <div className="w-full h-full min-h-[44px] bg-[#080c14] border border-dark-border rounded-lg overflow-hidden relative">
       <canvas ref={canvasRef} width={600} height={48} className="w-full h-full block" />
-      <div className="absolute top-1 right-2 text-[10px] text-neutral-400 font-mono">
+      <div className="absolute top-1 right-2 text-[10px] text-sky-400 font-mono font-bold">
         {speedHistory.length > 0 ? `${speedHistory[speedHistory.length - 1].toFixed(1)} MB/s` : "0.0 MB/s"}
       </div>
     </div>
