@@ -229,8 +229,8 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose, lang })
         {/* Body */}
         <div className="p-6 flex flex-col items-center text-center">
           {/* Brand Icon */}
-          <div className="w-[72px] h-[72px] mb-3 flex items-center justify-center rounded-2xl bg-neutral-950 border border-neutral-700/70 shadow-lg p-2.5">
-            <img src="/branding/app-icon.svg" alt="DeepNode Copy" className="w-full h-full object-contain" />
+          <div className="w-[72px] h-[72px] mb-3 flex items-center justify-center rounded-2xl bg-neutral-950 border border-neutral-700/70 shadow-lg p-1 overflow-hidden">
+            <img src="/branding/app-icon.png" alt="DeepNode Copy" className="w-full h-full object-contain rounded-xl" />
           </div>
 
           <h3 className="text-lg font-bold text-neutral-100 tracking-wide">{t.appTitle}</h3>
