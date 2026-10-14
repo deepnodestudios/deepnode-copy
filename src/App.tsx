@@ -19,6 +19,7 @@ import { ExpandedView } from "./components/ExpandedView";
 import { VerifyModal } from "./components/VerifyModal";
 import { CopyPasteModal } from "./components/CopyPasteModal";
 import { ConflictModal } from "./components/ConflictModal";
+import { AboutModal } from "./components/AboutModal";
 import { Language, translations } from "./i18n";
 
 export const App: React.FC = () => {
@@ -26,6 +27,7 @@ export const App: React.FC = () => {
   const [transferStatus, setTransferStatus] = useState<TransferStatus>("idle");
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
   const [verifyModalOpen, setVerifyModalOpen] = useState(false);
+  const [aboutModalOpen, setAboutModalOpen] = useState(false);
   const [copyPasteModalOpen, setCopyPasteModalOpen] = useState(false);
   const [activeConflict, setActiveConflict] = useState<ConflictInfo | null>(null);
   const [lang, setLangState] = useState<Language>(() => {
@@ -584,6 +586,7 @@ export const App: React.FC = () => {
           onCancel={handleCancel}
           onExpand={() => handleToggleCompact(false)}
           onOpenVerify={() => setVerifyModalOpen(true)}
+          onOpenAbout={() => setAboutModalOpen(true)}
           onCloseApp={handleCloseApp}
           lang={lang}
         />
@@ -604,6 +607,7 @@ export const App: React.FC = () => {
           onMinimize={() => handleToggleCompact(true)}
           onToggleAlwaysOnTop={handleToggleAlwaysOnTop}
           onOpenVerify={() => setVerifyModalOpen(true)}
+          onOpenAbout={() => setAboutModalOpen(true)}
           onRegisterContextMenu={handleRegisterContextMenu}
           onFinishAction={onFinishAction}
           onChangeOnFinish={setOnFinishAction}
@@ -634,6 +638,13 @@ export const App: React.FC = () => {
       <VerifyModal
         isOpen={verifyModalOpen}
         onClose={() => setVerifyModalOpen(false)}
+        lang={lang}
+      />
+
+      {/* About Modal */}
+      <AboutModal
+        isOpen={aboutModalOpen}
+        onClose={() => setAboutModalOpen(false)}
         lang={lang}
       />
 

@@ -1,5 +1,5 @@
 import React from "react";
-import { Play, Pause, X, ChevronDown, ShieldCheck, Pin, FolderOpen, ArrowRight } from "lucide-react";
+import { Play, Pause, X, ChevronDown, ShieldCheck, Pin, FolderOpen, ArrowRight, Info } from "lucide-react";
 import { TransferStats, TransferStatus } from "../types";
 import { translations, Language } from "../i18n";
 import { SpeedChart } from "./SpeedChart";
@@ -36,6 +36,7 @@ interface CompactViewProps {
   onCancel: () => void;
   onExpand: () => void;
   onOpenVerify: () => void;
+  onOpenAbout: () => void;
   onCloseApp?: () => void;
   lang: Language;
 }
@@ -52,6 +53,7 @@ export const CompactView: React.FC<CompactViewProps> = ({
   onCancel,
   onExpand,
   onOpenVerify,
+  onOpenAbout,
   onCloseApp,
   lang,
 }) => {
@@ -128,9 +130,16 @@ export const CompactView: React.FC<CompactViewProps> = ({
           <button
             onClick={onOpenVerify}
             title={t.clipboardTest}
-            className="p-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-indigo-400 transition"
+            className="p-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-indigo-400 transition cursor-pointer"
           >
             <ShieldCheck className="w-3 h-3" />
+          </button>
+          <button
+            onClick={onOpenAbout}
+            title={t.aboutTitle}
+            className="p-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-indigo-400 transition cursor-pointer"
+          >
+            <Info className="w-3 h-3" />
           </button>
         </div>
       </div>

@@ -52,6 +52,7 @@ export const supportedLanguages: LanguageMeta[] = [
 ];
 
 export interface TranslationKeys {
+  aboutTitle: string;
   addFiles: string;
   addFolder: string;
   all: string;
@@ -61,6 +62,8 @@ export interface TranslationKeys {
   browseDestination: string;
   cancel: string;
   canceledSummary: string;
+  checkUpdates: string;
+  checkingUpdates: string;
   clearList: string;
   clipboardTest: string;
   close: string;
@@ -77,12 +80,16 @@ export interface TranslationKeys {
   conflictSkip: string;
   conflictSourceLabel: string;
   conflictTargetLabel: string;
+  contactEmail: string;
   copy: string;
   copyPasteMenu: string;
   currentFile: string;
   destination: string;
+  developerLabel: string;
   directIo: string;
   doNothing: string;
+  downloadInstall: string;
+  downloadingPct: string;
   dragDropHint: string;
   eta: string;
   expandedMode: string;
@@ -92,6 +99,7 @@ export interface TranslationKeys {
   hashAlgorithm: string;
   hibernate: string;
   hourShort: string;
+  installStarted: string;
   languageLabel: string;
   less: string;
   matchFail: string;
@@ -106,9 +114,11 @@ export interface TranslationKeys {
   onFinish: string;
   pause: string;
   registerContextMenu: string;
+  releaseNotes: string;
   remainingFilter: string;
   restart: string;
   resume: string;
+  retryDownload: string;
   retryFailed: string;
   sameSizeBadge: string;
   secShort: string;
@@ -137,10 +147,15 @@ export interface TranslationKeys {
   transferSettings: string;
   transferTab: string;
   transferred: string;
+  upToDate: string;
+  updateAvailable: string;
+  updateCheckError: string;
   verify: string;
   verifyAlways: string;
   verifyMode: string;
   verifyNever: string;
+  versionLabel: string;
+  willInstall: string;
 }
 
 export const translations: Record<Language, TranslationKeys> = {
@@ -233,7 +248,22 @@ export const translations: Record<Language, TranslationKeys> = {
     "languageLabel": "Arayüz Dili",
     "secShort": "sn",
     "minShort": "dk",
-    "hourShort": "sa"
+    "hourShort": "sa",
+    "aboutTitle": "Hakkında",
+    "versionLabel": "Sürüm",
+    "developerLabel": "Geliştirici",
+    "contactEmail": "E-posta",
+    "checkUpdates": "Güncellemeleri Kontrol Et",
+    "checkingUpdates": "Kontrol ediliyor...",
+    "upToDate": "En güncel sürümü kullanıyorsunuz.",
+    "updateAvailable": "Yeni sürüm mevcut:",
+    "downloadInstall": "İndir ve Yükle",
+    "updateCheckError": "Güncelleme kontrolü başarısız.",
+    "releaseNotes": "Sürüm Notları",
+    "downloadingPct": "İndiriliyor... %{n}",
+    "willInstall": "Yüklenecek... Uygulama yeniden başlatılıyor.",
+    "installStarted": "Kurulum başlatıldı...",
+    "retryDownload": "Tekrar Dene"
 },
   "en": {
     "appTitle": "DeepNode Copy",
@@ -324,7 +354,22 @@ export const translations: Record<Language, TranslationKeys> = {
     "languageLabel": "Language",
     "secShort": "s",
     "minShort": "m",
-    "hourShort": "h"
+    "hourShort": "h",
+    "aboutTitle": "About",
+    "versionLabel": "Version",
+    "developerLabel": "Developer",
+    "contactEmail": "Email",
+    "checkUpdates": "Check for Updates",
+    "checkingUpdates": "Checking for updates...",
+    "upToDate": "You are using the latest version.",
+    "updateAvailable": "New version available:",
+    "downloadInstall": "Download & Install",
+    "updateCheckError": "Update check failed.",
+    "releaseNotes": "Release Notes",
+    "downloadingPct": "Downloading... {n}%",
+    "willInstall": "Will install... Application restarting.",
+    "installStarted": "Installation started...",
+    "retryDownload": "Retry"
 },
   "de": {
     "appTitle": "DeepNode Copy",
@@ -415,7 +460,22 @@ export const translations: Record<Language, TranslationKeys> = {
     "languageLabel": "Sprache",
     "secShort": "Sek.",
     "minShort": "Min.",
-    "hourShort": "Std."
+    "hourShort": "Std.",
+    "aboutTitle": "Über",
+    "versionLabel": "Version",
+    "developerLabel": "Entwickler",
+    "contactEmail": "E-Mail",
+    "checkUpdates": "Nach Updates suchen",
+    "checkingUpdates": "Suche nach Updates...",
+    "upToDate": "Sie verwenden die neueste Version.",
+    "updateAvailable": "Neue Version verfügbar:",
+    "downloadInstall": "Herunterladen & Installieren",
+    "updateCheckError": "Update-Prüfung fehlgeschlagen.",
+    "releaseNotes": "Versionshinweise",
+    "downloadingPct": "Wird heruntergeladen... {n}%",
+    "willInstall": "Wird installiert... Anwendung startet neu.",
+    "installStarted": "Installation gestartet...",
+    "retryDownload": "Wiederholen"
 },
   "es": {
     "appTitle": "DeepNode Copy",
@@ -506,7 +566,22 @@ export const translations: Record<Language, TranslationKeys> = {
     "languageLabel": "Idioma",
     "secShort": "s",
     "minShort": "min",
-    "hourShort": "h"
+    "hourShort": "h",
+    "aboutTitle": "Acerca de",
+    "versionLabel": "Versión",
+    "developerLabel": "Desarrollador",
+    "contactEmail": "Correo electrónico",
+    "checkUpdates": "Buscar actualizaciones",
+    "checkingUpdates": "Buscando actualizaciones...",
+    "upToDate": "Está utilizando la versión más reciente.",
+    "updateAvailable": "Nueva versión disponible:",
+    "downloadInstall": "Descargar e instalar",
+    "updateCheckError": "Error al buscar actualizaciones.",
+    "releaseNotes": "Notas de la versión",
+    "downloadingPct": "Descargando... {n}%",
+    "willInstall": "Se instalará... Reiniciando la aplicación.",
+    "installStarted": "Instalación iniciada...",
+    "retryDownload": "Reintentar"
 },
   "fr": {
     "appTitle": "DeepNode Copy",
@@ -597,7 +672,22 @@ export const translations: Record<Language, TranslationKeys> = {
     "languageLabel": "Langue",
     "secShort": "s",
     "minShort": "min",
-    "hourShort": "h"
+    "hourShort": "h",
+    "aboutTitle": "À propos",
+    "versionLabel": "Version",
+    "developerLabel": "Développeur",
+    "contactEmail": "E-mail",
+    "checkUpdates": "Vérifier les mises à jour",
+    "checkingUpdates": "Vérification des mises à jour...",
+    "upToDate": "Vous utilisez la dernière version.",
+    "updateAvailable": "Nouvelle version disponible :",
+    "downloadInstall": "Télécharger et installer",
+    "updateCheckError": "Échec de la recherche de mise à jour.",
+    "releaseNotes": "Notes de version",
+    "downloadingPct": "Téléchargement en cours... {n}%",
+    "willInstall": "Sera installé... Redémarrage de l'application.",
+    "installStarted": "Installation commencée...",
+    "retryDownload": "Réessayer"
 },
   "it": {
     "appTitle": "DeepNode Copy",
@@ -688,7 +778,22 @@ export const translations: Record<Language, TranslationKeys> = {
     "languageLabel": "Lingua",
     "secShort": "s",
     "minShort": "min",
-    "hourShort": "h"
+    "hourShort": "h",
+    "aboutTitle": "Informazioni",
+    "versionLabel": "Versione",
+    "developerLabel": "Sviluppatore",
+    "contactEmail": "E-mail",
+    "checkUpdates": "Controlla aggiornamenti",
+    "checkingUpdates": "Controllo aggiornamenti...",
+    "upToDate": "Stai utilizzando la versione più recente.",
+    "updateAvailable": "Nuova versione disponibile:",
+    "downloadInstall": "Scarica e installa",
+    "updateCheckError": "Controllo aggiornamenti non riuscito.",
+    "releaseNotes": "Note di rilascio",
+    "downloadingPct": "Download in corso... {n}%",
+    "willInstall": "Verrà installato... Riavvio dell'applicazione.",
+    "installStarted": "Installazione avviata...",
+    "retryDownload": "Riprova"
 },
   "pt": {
     "appTitle": "DeepNode Copy",
@@ -779,7 +884,22 @@ export const translations: Record<Language, TranslationKeys> = {
     "languageLabel": "Idioma",
     "secShort": "s",
     "minShort": "min",
-    "hourShort": "h"
+    "hourShort": "h",
+    "aboutTitle": "Sobre",
+    "versionLabel": "Versão",
+    "developerLabel": "Desenvolvedor",
+    "contactEmail": "E-mail",
+    "checkUpdates": "Verificar atualizações",
+    "checkingUpdates": "Verificando atualizações...",
+    "upToDate": "Você está usando a versão mais recente.",
+    "updateAvailable": "Nova versão disponível:",
+    "downloadInstall": "Baixar e instalar",
+    "updateCheckError": "Falha ao verificar atualizações.",
+    "releaseNotes": "Notas de lançamento",
+    "downloadingPct": "Baixando... {n}%",
+    "willInstall": "Será instalado... Reiniciando o aplicativo.",
+    "installStarted": "Instalação iniciada...",
+    "retryDownload": "Tentar novamente"
 },
   "ru": {
     "appTitle": "DeepNode Copy",
@@ -870,7 +990,22 @@ export const translations: Record<Language, TranslationKeys> = {
     "languageLabel": "Язык интерфейса",
     "secShort": "с",
     "minShort": "мин",
-    "hourShort": "ч"
+    "hourShort": "ч",
+    "aboutTitle": "О программе",
+    "versionLabel": "Версия",
+    "developerLabel": "Разработчик",
+    "contactEmail": "Электронная почта",
+    "checkUpdates": "Проверить обновления",
+    "checkingUpdates": "Проверка обновлений...",
+    "upToDate": "Вы используете последнюю версию.",
+    "updateAvailable": "Доступна новая версия:",
+    "downloadInstall": "Скачать и установить",
+    "updateCheckError": "Ошибка проверки обновлений.",
+    "releaseNotes": "Примечания к выпуску",
+    "downloadingPct": "Загрузка... {n}%",
+    "willInstall": "Будет установлено... Перезапуск приложения.",
+    "installStarted": "Установка началась...",
+    "retryDownload": "Повторить"
 },
   "ja": {
     "appTitle": "DeepNode Copy",
@@ -961,7 +1096,22 @@ export const translations: Record<Language, TranslationKeys> = {
     "languageLabel": "表示言語",
     "secShort": "秒",
     "minShort": "分",
-    "hourShort": "時間"
+    "hourShort": "時間",
+    "aboutTitle": "バージョン情報",
+    "versionLabel": "バージョン",
+    "developerLabel": "開発者",
+    "contactEmail": "メール",
+    "checkUpdates": "更新を確認",
+    "checkingUpdates": "更新を確認中...",
+    "upToDate": "最新バージョンを使用しています。",
+    "updateAvailable": "新しいバージョンが利用可能です:",
+    "downloadInstall": "ダウンロードしてインストール",
+    "updateCheckError": "更新の確認に失敗しました。",
+    "releaseNotes": "リリースノート",
+    "downloadingPct": "ダウンロード中... {n}%",
+    "willInstall": "インストールします... アプリを再起動中。",
+    "installStarted": "インストールを開始しました...",
+    "retryDownload": "再試行"
 },
   "ko": {
     "appTitle": "DeepNode Copy",
@@ -1052,7 +1202,22 @@ export const translations: Record<Language, TranslationKeys> = {
     "languageLabel": "언어",
     "secShort": "초",
     "minShort": "분",
-    "hourShort": "시간"
+    "hourShort": "시간",
+    "aboutTitle": "정보",
+    "versionLabel": "버전",
+    "developerLabel": "개발자",
+    "contactEmail": "이메일",
+    "checkUpdates": "업데이트 확인",
+    "checkingUpdates": "업데이트 확인 중...",
+    "upToDate": "최신 버전을 사용하고 있습니다.",
+    "updateAvailable": "새 버전 사용 가능:",
+    "downloadInstall": "다운로드 및 설치",
+    "updateCheckError": "업데이트 확인 실패.",
+    "releaseNotes": "릴리스 정보",
+    "downloadingPct": "다운로드 중... {n}%",
+    "willInstall": "설치 예정... 앱을 다시 시작합니다.",
+    "installStarted": "설치가 시작되었습니다...",
+    "retryDownload": "다시 시도"
 },
   "zh-CN": {
     "appTitle": "DeepNode Copy",
@@ -1143,7 +1308,22 @@ export const translations: Record<Language, TranslationKeys> = {
     "languageLabel": "语言",
     "secShort": "秒",
     "minShort": "分",
-    "hourShort": "小时"
+    "hourShort": "小时",
+    "aboutTitle": "关于",
+    "versionLabel": "版本",
+    "developerLabel": "开发者",
+    "contactEmail": "电子邮件",
+    "checkUpdates": "检查更新",
+    "checkingUpdates": "正在检查更新...",
+    "upToDate": "您使用的是最新版本。",
+    "updateAvailable": "有新版本可用：",
+    "downloadInstall": "下载并安装",
+    "updateCheckError": "检查更新失败。",
+    "releaseNotes": "发行说明",
+    "downloadingPct": "正在下载... {n}%",
+    "willInstall": "即将安装... 正在重启应用。",
+    "installStarted": "安装已开始...",
+    "retryDownload": "重试"
 },
   "zh-TW": {
     "appTitle": "DeepNode Copy",
@@ -1234,7 +1414,22 @@ export const translations: Record<Language, TranslationKeys> = {
     "languageLabel": "語言",
     "secShort": "秒",
     "minShort": "分",
-    "hourShort": "小時"
+    "hourShort": "小時",
+    "aboutTitle": "關於",
+    "versionLabel": "版本",
+    "developerLabel": "開發者",
+    "contactEmail": "電子郵件",
+    "checkUpdates": "檢查更新",
+    "checkingUpdates": "正在檢查更新...",
+    "upToDate": "您使用的是最新版本。",
+    "updateAvailable": "有新版本可用：",
+    "downloadInstall": "下載並安裝",
+    "updateCheckError": "檢查更新失敗。",
+    "releaseNotes": "版本說明",
+    "downloadingPct": "正在下載... {n}%",
+    "willInstall": "即將安裝... 正在重啟應用。",
+    "installStarted": "安裝已開始...",
+    "retryDownload": "重試"
 },
   "ar": {
     "appTitle": "DeepNode Copy",
@@ -1325,7 +1520,22 @@ export const translations: Record<Language, TranslationKeys> = {
     "languageLabel": "اللغة",
     "secShort": "ث",
     "minShort": "د",
-    "hourShort": "س"
+    "hourShort": "س",
+    "aboutTitle": "حول",
+    "versionLabel": "الإصدار",
+    "developerLabel": "المطور",
+    "contactEmail": "البريد الإلكتروني",
+    "checkUpdates": "التحقق من وجود تحديثات",
+    "checkingUpdates": "جارٍ التحقق من التحديثات...",
+    "upToDate": "أنت تستخدم أحدث إصدار.",
+    "updateAvailable": "يتوفر إصدار جديد:",
+    "downloadInstall": "تنزيل وتثبيت",
+    "updateCheckError": "فشل التحقق من التحديثات.",
+    "releaseNotes": "ملاحظات الإصدار",
+    "downloadingPct": "جارٍ التنزيل... {n}٪",
+    "willInstall": "سيتم التثبيت... جاري إعادة تشغيل التطبيق.",
+    "installStarted": "بدأ التثبيت...",
+    "retryDownload": "إعادة المحاولة"
 },
   "hi": {
     "appTitle": "DeepNode Copy",
@@ -1416,7 +1626,22 @@ export const translations: Record<Language, TranslationKeys> = {
     "languageLabel": "भाषा",
     "secShort": "से.",
     "minShort": "मि.",
-    "hourShort": "घं."
+    "hourShort": "घं.",
+    "aboutTitle": "के बारे में",
+    "versionLabel": "संस्करण",
+    "developerLabel": "डेवलपर",
+    "contactEmail": "ईमेल",
+    "checkUpdates": "अपडेट जांचें",
+    "checkingUpdates": "अपडेट की जांच हो रही है...",
+    "upToDate": "आप नवीनतम संस्करण का उपयोग कर रहे हैं।",
+    "updateAvailable": "नया संस्करण उपलब्ध है:",
+    "downloadInstall": "डाउनलोड और इंस्टॉल करें",
+    "updateCheckError": "अपडेट जांच विफल रही।",
+    "releaseNotes": "रिलीज़ नोट्स",
+    "downloadingPct": "डाउनलोड हो रहा है... {n}%",
+    "willInstall": "इंस्टॉल होगा... ऐप पुनरारंभ हो रहा है।",
+    "installStarted": "स्थापना प्रारंभ हुई...",
+    "retryDownload": "पुनः प्रयास करें"
 },
   "pl": {
     "appTitle": "DeepNode Copy",
@@ -1507,7 +1732,22 @@ export const translations: Record<Language, TranslationKeys> = {
     "languageLabel": "Język",
     "secShort": "s",
     "minShort": "min",
-    "hourShort": "godz."
+    "hourShort": "godz.",
+    "aboutTitle": "O programie",
+    "versionLabel": "Wersja",
+    "developerLabel": "Twórca",
+    "contactEmail": "E-mail",
+    "checkUpdates": "Sprawdź aktualizacje",
+    "checkingUpdates": "Sprawdzanie aktualizacji...",
+    "upToDate": "Używasz najnowszej wersji.",
+    "updateAvailable": "Dostępna nowa wersja:",
+    "downloadInstall": "Pobierz i zainstaluj",
+    "updateCheckError": "Nie udało się sprawdzić aktualizacji.",
+    "releaseNotes": "Informacje o wydaniu",
+    "downloadingPct": "Pobieranie... {n}%",
+    "willInstall": "Zostanie zainstalowany... Ponowne uruchamianie.",
+    "installStarted": "Rozpoczęto instalację...",
+    "retryDownload": "Ponów"
 },
   "nl": {
     "appTitle": "DeepNode Copy",
@@ -1598,7 +1838,22 @@ export const translations: Record<Language, TranslationKeys> = {
     "languageLabel": "Taal",
     "secShort": "s",
     "minShort": "m",
-    "hourShort": "u"
+    "hourShort": "u",
+    "aboutTitle": "Over",
+    "versionLabel": "Versie",
+    "developerLabel": "Ontwikkelaar",
+    "contactEmail": "E-mail",
+    "checkUpdates": "Controleren op updates",
+    "checkingUpdates": "Bezig met controleren op updates...",
+    "upToDate": "U gebruikt de nieuwste versie.",
+    "updateAvailable": "Nieuwe versie beschikbaar:",
+    "downloadInstall": "Downloaden en installeren",
+    "updateCheckError": "Updatecontrole mislukt.",
+    "releaseNotes": "Releaseopmerkingen",
+    "downloadingPct": "Downloaden... {n}%",
+    "willInstall": "Wordt geïnstalleerd... Applicatie herstart.",
+    "installStarted": "Installatie gestart...",
+    "retryDownload": "Opnieuw proberen"
 },
   "sv": {
     "appTitle": "DeepNode Copy",
@@ -1689,7 +1944,22 @@ export const translations: Record<Language, TranslationKeys> = {
     "languageLabel": "Språk",
     "secShort": "s",
     "minShort": "min",
-    "hourShort": "tim"
+    "hourShort": "tim",
+    "aboutTitle": "Om",
+    "versionLabel": "Version",
+    "developerLabel": "Utvecklare",
+    "contactEmail": "E-post",
+    "checkUpdates": "Sök efter uppdateringar",
+    "checkingUpdates": "Söker efter uppdateringar...",
+    "upToDate": "Du använder den senaste versionen.",
+    "updateAvailable": "Ny version tillgänglig:",
+    "downloadInstall": "Ladda ner och installera",
+    "updateCheckError": "Kunde inte söka efter uppdateringar.",
+    "releaseNotes": "Versionsinformation",
+    "downloadingPct": "Laddar ner... {n}%",
+    "willInstall": "Kommer att installeras... Programmet startar om.",
+    "installStarted": "Installationen har startat...",
+    "retryDownload": "Försök igen"
 },
   "uk": {
     "appTitle": "DeepNode Copy",
@@ -1780,7 +2050,22 @@ export const translations: Record<Language, TranslationKeys> = {
     "languageLabel": "Мова",
     "secShort": "с",
     "minShort": "хв",
-    "hourShort": "год"
+    "hourShort": "год",
+    "aboutTitle": "Про програму",
+    "versionLabel": "Версія",
+    "developerLabel": "Розробник",
+    "contactEmail": "Електронна пошта",
+    "checkUpdates": "Перевірити наявність оновлень",
+    "checkingUpdates": "Перевірка оновлень...",
+    "upToDate": "Ви використовуєте найновішу версію.",
+    "updateAvailable": "Доступна нова версія:",
+    "downloadInstall": "Завантажити та встановити",
+    "updateCheckError": "Не вдалося перевірити оновлення.",
+    "releaseNotes": "Примітки до випуску",
+    "downloadingPct": "Завантаження... {n}%",
+    "willInstall": "Буде встановлено... Перезапуск програми.",
+    "installStarted": "Встановлення розпочато...",
+    "retryDownload": "Повторити"
 },
   "vi": {
     "appTitle": "DeepNode Copy",
@@ -1871,7 +2156,22 @@ export const translations: Record<Language, TranslationKeys> = {
     "languageLabel": "Ngôn ngữ",
     "secShort": "giây",
     "minShort": "phút",
-    "hourShort": "giờ"
+    "hourShort": "giờ",
+    "aboutTitle": "Giới thiệu",
+    "versionLabel": "Phiên bản",
+    "developerLabel": "Nhà phát triển",
+    "contactEmail": "Email",
+    "checkUpdates": "Kiểm tra bản cập nhật",
+    "checkingUpdates": "Đang kiểm tra cập nhật...",
+    "upToDate": "Bạn đang sử dụng phiên bản mới nhất.",
+    "updateAvailable": "Đã có phiên bản mới:",
+    "downloadInstall": "Tải xuống & Cài đặt",
+    "updateCheckError": "Kiểm tra cập nhật thất bại.",
+    "releaseNotes": "Ghi chú phát hành",
+    "downloadingPct": "Đang tải xuống... {n}%",
+    "willInstall": "Sẽ cài đặt... Đang khởi động lại ứng dụng.",
+    "installStarted": "Đã bắt đầu cài đặt...",
+    "retryDownload": "Thử lại"
 },
   "id": {
     "appTitle": "DeepNode Copy",
@@ -1962,6 +2262,21 @@ export const translations: Record<Language, TranslationKeys> = {
     "languageLabel": "Bahasa",
     "secShort": "dtk",
     "minShort": "mnt",
-    "hourShort": "jam"
+    "hourShort": "jam",
+    "aboutTitle": "Tentang",
+    "versionLabel": "Versi",
+    "developerLabel": "Pengembang",
+    "contactEmail": "Email",
+    "checkUpdates": "Periksa Pembaruan",
+    "checkingUpdates": "Memeriksa pembaruan...",
+    "upToDate": "Anda menggunakan versi terbaru.",
+    "updateAvailable": "Versi baru tersedia:",
+    "downloadInstall": "Unduh & Pasang",
+    "updateCheckError": "Gagal memeriksa pembaruan.",
+    "releaseNotes": "Catatan Rilis",
+    "downloadingPct": "Mengunduh... {n}%",
+    "willInstall": "Akan diinstal... Memulai ulang aplikasi.",
+    "installStarted": "Pemasangan dimulai...",
+    "retryDownload": "Coba lagi"
 },
 };

@@ -24,6 +24,7 @@ import {
   Clock,
   RotateCcw,
   Globe,
+  Info,
 } from "lucide-react";
 import { FileItem, TransferStats, ScanPreviewResult, TransferStatus } from "../types";
 import { SpeedChart } from "./SpeedChart";
@@ -44,6 +45,7 @@ interface ExpandedViewProps {
   onMinimize: () => void;
   onToggleAlwaysOnTop: () => void;
   onOpenVerify: () => void;
+  onOpenAbout: () => void;
   onRegisterContextMenu: () => void;
   onCloseApp?: () => void;
   onResetToIdle?: () => void;
@@ -85,6 +87,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
   onMinimize,
   onToggleAlwaysOnTop,
   onOpenVerify,
+  onOpenAbout,
   onRegisterContextMenu,
   onCloseApp,
   onResetToIdle,
@@ -183,6 +186,15 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
             className="p-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-indigo-400 transition"
           >
             <ShieldCheck className="w-3.5 h-3.5" />
+          </button>
+
+          {/* About Dialog */}
+          <button
+            onClick={onOpenAbout}
+            title={t.aboutTitle}
+            className="p-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-indigo-400 transition"
+          >
+            <Info className="w-3.5 h-3.5" />
           </button>
 
           {/* Compact toggle */}
@@ -741,13 +753,21 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
               </div>
             </div>
 
-            <div className="pt-2 border-t border-neutral-800/80">
+            <div className="pt-2 border-t border-neutral-800/80 flex flex-col sm:flex-row gap-2">
               <button
                 onClick={onRegisterContextMenu}
-                className="w-full py-2 px-3 rounded-lg bg-emerald-600/80 hover:bg-emerald-500 text-white font-medium text-xs transition flex items-center justify-center gap-2"
+                className="flex-1 py-2 px-3 rounded-lg bg-emerald-600/80 hover:bg-emerald-500 text-white font-medium text-xs transition flex items-center justify-center gap-2 cursor-pointer shadow-sm"
               >
                 <ExternalLink className="w-3.5 h-3.5" />
                 <span>{t.registerContextMenu}</span>
+              </button>
+
+              <button
+                onClick={onOpenAbout}
+                className="py-2 px-4 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-medium text-xs transition flex items-center justify-center gap-2 border border-neutral-700/80 cursor-pointer shadow-sm"
+              >
+                <Info className="w-3.5 h-3.5 text-indigo-400" />
+                <span>{t.aboutTitle}</span>
               </button>
             </div>
           </div>

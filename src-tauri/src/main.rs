@@ -804,6 +804,220 @@ async fn resolve_conflict(
     Ok(())
 }
 
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", &url])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct UpdateProgressPayload {
+    pub status: String,
+    pub progress: u32,
+    pub error: Option<String>,
+}
+
+static UPDATE_INSTALLER_PATH: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+#[tauri::command]
+async fn start_update_download(app: AppHandle, url: String) -> Result<(), String> {
+    if !url.starts_with("https://github.com/deepnodestudios/deepnode-copy/releases/")
+        && !url.contains("github-releases.githubusercontent.com")
+        && !url.starts_with("https://deepnodestudios.com/")
+    {
+        return Err("Update source is not allowed".to_string());
+    }
+
+    let temp_dir = std::env::temp_dir().join("DeepNodeUpdate");
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let target_file = temp_dir.join("DeepNodeCopy_Setup.exe");
+    let part_file = temp_dir.join("DeepNodeCopy_Setup.exe.part");
+
+    let client = reqwest::Client::builder()
+        .user_agent("DeepNodeCopy/0.1.0")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    tauri::async_runtime::spawn(async move {
+        use futures_util::StreamExt;
+        use tokio::io::AsyncWriteExt;
+
+        let res = client.get(&url).send().await;
+        let response = match res {
+            Ok(r) if r.status().is_success() => r,
+            Ok(r) => {
+                let _ = app.emit(
+                    "update_progress",
+                    UpdateProgressPayload {
+                        status: "error".to_string(),
+                        progress: 0,
+                        error: Some(format!("HTTP {}", r.status())),
+                    },
+                );
+                return;
+            }
+            Err(e) => {
+                let _ = app.emit(
+                    "update_progress",
+                    UpdateProgressPayload {
+                        status: "error".to_string(),
+                        progress: 0,
+                        error: Some(e.to_string()),
+                    },
+                );
+                return;
+            }
+        };
+
+        let total_size = response.content_length().unwrap_or(0);
+        let mut file = match tokio::fs::File::create(&part_file).await {
+            Ok(f) => f,
+            Err(e) => {
+                let _ = app.emit(
+                    "update_progress",
+                    UpdateProgressPayload {
+                        status: "error".to_string(),
+                        progress: 0,
+                        error: Some(e.to_string()),
+                    },
+                );
+                return;
+            }
+        };
+
+        let mut downloaded: u64 = 0;
+        let mut stream = response.bytes_stream();
+        let mut last_emit = std::time::Instant::now();
+
+        while let Some(chunk_res) = stream.next().await {
+            match chunk_res {
+                Ok(chunk) => {
+                    if let Err(e) = file.write_all(&chunk).await {
+                        let _ = app.emit(
+                            "update_progress",
+                            UpdateProgressPayload {
+                                status: "error".to_string(),
+                                progress: 0,
+                                error: Some(e.to_string()),
+                            },
+                        );
+                        return;
+                    }
+                    downloaded += chunk.len() as u64;
+                    let pct = if total_size > 0 {
+                        ((downloaded as f64 / total_size as f64) * 100.0) as u32
+                    } else {
+                        50
+                    };
+
+                    if last_emit.elapsed() >= std::time::Duration::from_millis(300) || pct == 100 {
+                        let _ = app.emit(
+                            "update_progress",
+                            UpdateProgressPayload {
+                                status: "downloading".to_string(),
+                                progress: pct,
+                                error: None,
+                            },
+                        );
+                        last_emit = std::time::Instant::now();
+                    }
+                }
+                Err(e) => {
+                    let _ = app.emit(
+                        "update_progress",
+                        UpdateProgressPayload {
+                            status: "error".to_string(),
+                            progress: 0,
+                            error: Some(e.to_string()),
+                        },
+                    );
+                    return;
+                }
+            }
+        }
+
+        let _ = file.flush().await;
+        drop(file);
+
+        if let Err(e) = std::fs::rename(&part_file, &target_file) {
+            let _ = app.emit(
+                "update_progress",
+                UpdateProgressPayload {
+                    status: "error".to_string(),
+                    progress: 0,
+                    error: Some(e.to_string()),
+                },
+            );
+            return;
+        }
+
+        if let Ok(mut lock) = UPDATE_INSTALLER_PATH.lock() {
+            *lock = Some(target_file);
+        }
+
+        let _ = app.emit(
+            "update_progress",
+            UpdateProgressPayload {
+                status: "ready".to_string(),
+                progress: 100,
+                error: None,
+            },
+        );
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+fn install_app_update() -> Result<(), String> {
+    let path = {
+        let lock = UPDATE_INSTALLER_PATH.lock().map_err(|e| e.to_string())?;
+        lock.clone().unwrap_or_else(|| {
+            std::env::temp_dir().join("DeepNodeUpdate").join("DeepNodeCopy_Setup.exe")
+        })
+    };
+
+    if !path.exists() {
+        return Err("Installer file not found".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // Launch installer detached (silent NSIS upgrade)
+        std::process::Command::new(&path)
+            .args(["/S"])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .spawn()
+            .map_err(|e| format!("Failed to launch installer: {}", e))?;
+
+        // Quit current application so installer can overwrite binary
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            std::process::exit(0);
+        });
+
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(())
+    }
+}
+
 fn main() {
     let app_dir = std::env::var("APPDATA")
         .map(|a| PathBuf::from(a).join("DeepNodeCopy"))
@@ -1014,7 +1228,10 @@ fn main() {
                 get_current_transfer_state,
                 log_js,
                 capture_sentry_message,
-                register_shell_context_menu
+                register_shell_context_menu,
+                open_external_url,
+                start_update_download,
+                install_app_update
             ])
             .run(tauri::generate_context!())
     }));
