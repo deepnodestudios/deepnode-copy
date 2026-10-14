@@ -19,7 +19,7 @@ import { ExpandedView } from "./components/ExpandedView";
 import { VerifyModal } from "./components/VerifyModal";
 import { CopyPasteModal } from "./components/CopyPasteModal";
 import { ConflictModal } from "./components/ConflictModal";
-import { Language } from "./i18n";
+import { Language, translations } from "./i18n";
 
 export const App: React.FC = () => {
   const [isCompact, setIsCompact] = useState(false);
@@ -28,7 +28,28 @@ export const App: React.FC = () => {
   const [verifyModalOpen, setVerifyModalOpen] = useState(false);
   const [copyPasteModalOpen, setCopyPasteModalOpen] = useState(false);
   const [activeConflict, setActiveConflict] = useState<ConflictInfo | null>(null);
-  const [lang, setLang] = useState<Language>("tr");
+  const [lang, setLangState] = useState<Language>(() => {
+    try {
+      const saved = localStorage.getItem("deepnode_copy_lang");
+      if (saved && saved in translations) {
+        return saved as Language;
+      }
+    } catch {
+      // ignore
+    }
+    return "tr";
+  });
+
+  const setLang = (newLang: Language) => {
+    setLangState(newLang);
+    try {
+      localStorage.setItem("deepnode_copy_lang", newLang);
+    } catch {
+      // ignore
+    }
+  };
+
+  const t = translations[lang] || translations.tr;
   const isCanceledRef = React.useRef(false);
 
   // Transfer settings
@@ -214,7 +235,7 @@ export const App: React.FC = () => {
             case "TransferFailed":
               setTransferStatus("failed");
               Sentry.captureMessage(`DeepNode Transfer Failed: ${data.payload}`, "error");
-              alert(lang === "tr" ? `Transfer hatası: ${data.payload}` : `Transfer error: ${data.payload}`);
+              alert(`${t.statusFailed}: ${data.payload}`);
               break;
 
             case "ConflictDetected":
@@ -370,7 +391,7 @@ export const App: React.FC = () => {
 
   const handleStartTransfer = async (mode: "copy" | "move", overridePolicy?: string) => {
     if (stagedSources.length === 0) {
-      alert("Lütfen önce transfer edilecek dosya veya klasör ekleyin.");
+      alert(t.noFilesFound);
       return;
     }
 
@@ -421,7 +442,7 @@ export const App: React.FC = () => {
       }
     } catch (e) {
       setTransferStatus("failed");
-      alert("Transfer başlatılamadı: " + e);
+      alert(`${t.statusFailed}: ${e}`);
     }
   };
 
@@ -631,7 +652,7 @@ export const App: React.FC = () => {
         onClose={() => setCopyPasteModalOpen(false)}
         onSelectExplorer={() => {
           setCopyPasteModalOpen(false);
-          alert("Windows Gezgini ile yapıştırma seçildi.");
+          alert(lang === "tr" ? "Windows Gezgini ile yapıştırma seçildi." : "Pasted with Windows Explorer.");
         }}
         onSelectDeepNodeCopy={(policy) => {
           setCopyPasteModalOpen(false);
@@ -641,6 +662,7 @@ export const App: React.FC = () => {
           setCopyPasteModalOpen(false);
           handleStartTransfer("move");
         }}
+        lang={lang}
       />
     </main>
   );

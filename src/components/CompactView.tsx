@@ -12,15 +12,16 @@ export const formatBytes = (bytes: number): string => {
   return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
 };
 
-export const formatEta = (seconds: number, lang: "tr" | "en" = "tr"): string => {
-  if (seconds <= 0 || !isFinite(seconds)) return lang === "tr" ? "0 sn" : "0s";
-  if (seconds < 60) return `${Math.round(seconds)} ${lang === "tr" ? "sn" : "s"}`;
+export const formatEta = (seconds: number, lang: Language = "tr"): string => {
+  const dict = translations[lang] || translations.en;
+  if (seconds <= 0 || !isFinite(seconds)) return `0 ${dict.secShort}`;
+  if (seconds < 60) return `${Math.round(seconds)} ${dict.secShort}`;
   const m = Math.floor(seconds / 60);
   const s = Math.round(seconds % 60);
-  if (m < 60) return `${m} ${lang === "tr" ? "dk" : "m"} ${s} ${lang === "tr" ? "sn" : "s"}`;
+  if (m < 60) return `${m} ${dict.minShort} ${s} ${dict.secShort}`;
   const h = Math.floor(m / 60);
   const remM = m % 60;
-  return `${h} ${lang === "tr" ? "sa" : "h"} ${remM} ${lang === "tr" ? "dk" : "m"}`;
+  return `${h} ${dict.hourShort} ${remM} ${dict.minShort}`;
 };
 
 interface CompactViewProps {
@@ -210,7 +211,7 @@ export const CompactView: React.FC<CompactViewProps> = ({
           </span>
           <button
             onClick={onExpand}
-            title={lang === "tr" ? "Dosya listesini açmak için tıklayın" : "Click to view file list"}
+            title={t.files}
             className="hover:text-indigo-300 transition cursor-pointer flex items-center gap-1"
           >
             <span>{t.files}:</span>
@@ -248,10 +249,10 @@ export const CompactView: React.FC<CompactViewProps> = ({
           {(status === "completed" || status === "canceled" || status === "failed") && onCloseApp && (
             <button
               onClick={onCloseApp}
-              title={lang === "tr" ? "Kapat" : "Close"}
+              title={t.close}
               className="px-2.5 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-sans font-medium transition border border-neutral-700"
             >
-              {lang === "tr" ? "Kapat" : "Close"}
+              {t.close}
             </button>
           )}
 

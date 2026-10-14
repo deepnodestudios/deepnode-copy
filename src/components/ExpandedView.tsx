@@ -23,11 +23,12 @@ import {
   ChevronUp,
   Clock,
   RotateCcw,
+  Globe,
 } from "lucide-react";
 import { FileItem, TransferStats, ScanPreviewResult, TransferStatus } from "../types";
 import { SpeedChart } from "./SpeedChart";
 import { formatBytes, formatEta } from "./CompactView";
-import { translations, Language } from "../i18n";
+import { translations, Language, supportedLanguages } from "../i18n";
 
 interface ExpandedViewProps {
   stats: TransferStats;
@@ -146,12 +147,21 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
 
         <div className="flex items-center gap-1.5">
           {/* Language selector */}
-          <button
-            onClick={() => onLangChange(lang === "tr" ? "en" : "tr")}
-            className="px-1.5 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-[10px] font-mono text-neutral-300"
-          >
-            {lang.toUpperCase()}
-          </button>
+          <div className="flex items-center bg-neutral-800 hover:bg-neutral-700/80 rounded px-1.5 py-0.5 border border-neutral-700/80 transition">
+            <Globe className="w-3 h-3 text-neutral-400 mr-1 flex-shrink-0" />
+            <select
+              value={lang}
+              onChange={(e) => onLangChange(e.target.value as Language)}
+              className="bg-transparent text-[10px] font-mono text-neutral-200 focus:outline-none cursor-pointer"
+              title={t.languageLabel}
+            >
+              {supportedLanguages.map((l) => (
+                <option key={l.code} value={l.code} className="bg-neutral-900 text-neutral-200">
+                  {l.flag} {l.nativeName} ({l.code})
+                </option>
+              ))}
+            </select>
+          </div>
 
           {/* Always on top toggle */}
           <button
@@ -193,12 +203,12 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between text-xs font-mono">
               <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                <span className="text-neutral-500 font-sans text-[11px] flex-shrink-0">Kaynak:</span>
+                <span className="text-neutral-500 font-sans text-[11px] flex-shrink-0">{t.source}:</span>
                 <span className="text-neutral-300 truncate max-w-[40%]" title={stagedSources[0] || ""}>
                   {stagedSources[0] ? stagedSources[0].split("\\").pop() || stagedSources[0] : "..."}
                 </span>
                 <ArrowRight className="w-3 h-3 text-neutral-600 flex-shrink-0" />
-                <span className="text-neutral-500 font-sans text-[11px] flex-shrink-0">Hedef:</span>
+                <span className="text-neutral-500 font-sans text-[11px] flex-shrink-0">{t.destination}:</span>
                 <span className="text-neutral-200 font-semibold truncate max-w-[40%]" title={destination}>
                   {destination ? destination.split("\\").pop() || destination : "..."}
                 </span>
@@ -231,7 +241,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                 {transferStatus === "failed" && (
                   <span className="text-rose-400 font-semibold text-xs px-2 py-0.5 rounded bg-rose-950/80 border border-rose-800 flex items-center gap-1">
                     <AlertTriangle className="w-3.5 h-3.5" />
-                    <span>HATA</span>
+                    <span>{t.failed}</span>
                   </span>
                 )}
               </div>
@@ -259,13 +269,13 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
               </div>
             ) : transferStatus === "canceled" ? (
               <div className="flex items-center justify-between text-[11px] font-sans text-rose-300 bg-rose-950/30 px-2.5 py-1 rounded border border-rose-900/40">
-                <span>Kopyalama işlemi iptal edildi. Kısmi aktarılan geçici dosyalar hedeften silindi.</span>
+                <span>{t.canceledSummary}</span>
                 <span className="font-mono text-neutral-400">{formatBytes(stats.transferred_bytes)} / {formatBytes(stats.total_bytes)}</span>
               </div>
             ) : transferStatus === "completed" ? (
               <div className="flex items-center justify-between text-[11px] font-sans text-emerald-300 bg-emerald-950/30 px-2.5 py-1 rounded border border-emerald-900/40">
-                <span>Tüm dosyalar başarıyla aktarıldı.</span>
-                <span className="font-mono text-neutral-400">{stats.completed_files} dosya ({formatBytes(stats.transferred_bytes)})</span>
+                <span>{t.completedSummary}</span>
+                <span className="font-mono text-neutral-400">{stats.completed_files} {t.files} ({formatBytes(stats.transferred_bytes)})</span>
               </div>
             ) : null}
           </div>
@@ -353,7 +363,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
         <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-neutral-400 pt-1 border-t border-neutral-800/60">
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-1">
-              <span className="text-neutral-500">Çakışma:</span>
+              <span className="text-neutral-500">{t.conflictPolicy}:</span>
               <select
                 value={conflictPolicy}
                 onChange={(e) => onChangeConflictPolicy(e.target.value)}
@@ -367,21 +377,21 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
             </div>
 
             <div className="flex items-center gap-1">
-              <span className="text-neutral-500">Hash:</span>
+              <span className="text-neutral-500">{t.hashAlgorithm}:</span>
               <select
                 value={hashAlgorithm}
                 onChange={(e) => onChangeHashAlgorithm(e.target.value)}
                 className="bg-neutral-900 border border-neutral-700/80 rounded px-1.5 py-0.5 text-neutral-200 text-[11px] focus:outline-none"
               >
                 <option value="xxhash3">xxHash3-64 (SIMD 30 GB/s)</option>
-                <option value="blake3">BLAKE3 (Kripto Hızlı)</option>
+                <option value="blake3">BLAKE3 (SIMD)</option>
                 <option value="sha256">SHA-256</option>
                 <option value="md5">MD5</option>
               </select>
             </div>
 
             <div className="flex items-center gap-1">
-              <span className="text-neutral-500">Doğrulama:</span>
+              <span className="text-neutral-500">{t.verifyMode}:</span>
               <select
                 value={verifyMode}
                 onChange={(e) => onChangeVerifyMode(e.target.value)}
@@ -406,10 +416,10 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
           <div className="text-neutral-400">
             {stagedSources.length > 0 ? (
               <span className="text-indigo-300 font-semibold">
-                Seçili: {stagedSources.length} öğe ({stagedPreview ? stagedPreview.total_files : 0} dosya, {stagedTotalMb} MB)
+                {t.selectedItems}: {stagedSources.length} ({stagedPreview ? stagedPreview.total_files : 0} {t.files}, {stagedTotalMb} MB)
               </span>
             ) : (
-              <span className="text-neutral-500">Kuyrukta dosya yok</span>
+              <span className="text-neutral-500">{t.noFilesQueued}</span>
             )}
           </div>
         </div>
@@ -479,7 +489,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                 : "text-neutral-400 hover:text-neutral-200"
             }`}
           >
-            {isTransferring || files.length > 0 ? `Aktarım (${files.length})` : `Seçilenler (${stagedSources.length})`}
+            {isTransferring || files.length > 0 ? `${t.transferTab} (${files.length})` : `${t.stagedTab} (${stagedSources.length})`}
           </button>
           <button
             onClick={() => setActiveTab("settings")}
@@ -490,7 +500,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
             }`}
           >
             <Settings className="w-3.5 h-3.5" />
-            <span>Ayarlar</span>
+            <span>{t.settingsTab}</span>
           </button>
         </div>
 
@@ -518,7 +528,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                 filter === "remaining" ? "bg-sky-700 text-white" : "text-neutral-400 hover:text-neutral-200"
               }`}
             >
-              Kalanlar ({remainingFilesCount})
+              {t.remainingFilter} ({remainingFilesCount})
             </button>
             <button
               onClick={() => setFilter("skipped")}
@@ -584,7 +594,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                               <span>{formatBytes(item.bytes_transferred || 0)} / {formatBytes(item.size)}</span>
                               <span>
                                 {item.size > 0 ? Math.min(100, Math.round(((item.bytes_transferred || 0) / item.size) * 100)) : 0}%
-                                {item.status === "canceled" ? " (İptal)" : ""}
+                                {item.status === "canceled" ? ` (${t.statusCanceled})` : ""}
                               </span>
                             </div>
                             <div className="w-full h-1.5 bg-neutral-800 rounded-full overflow-hidden">
@@ -619,13 +629,13 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                         item.status === "skipped" ? "text-amber-400" :
                         "text-neutral-500"
                       }`}>
-                        {item.status === "completed" ? "TAMAMLANDI" :
-                         item.status === "copying" ? "KOPYALANIYOR" :
-                         item.status === "verifying" ? "DOĞRULANIYOR" :
-                         item.status === "failed" ? "HATA" :
-                         item.status === "canceled" ? "İPTAL EDİLDİ" :
-                         item.status === "skipped" ? "ATLANDI" :
-                         "BEKLİYOR"}
+                        {item.status === "completed" ? t.completed :
+                         item.status === "copying" ? t.statusTransferring :
+                         item.status === "verifying" ? t.statusVerifying :
+                         item.status === "failed" ? t.failed :
+                         item.status === "canceled" ? t.statusCanceled :
+                         item.status === "skipped" ? t.skipped :
+                         t.statusReady}
                       </span>
                     </div>
                   </div>
@@ -684,15 +694,30 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
           /* Settings Tab */
           <div className="p-3 bg-neutral-950/40 rounded-lg border border-neutral-800 flex flex-col gap-3 text-xs">
             <h3 className="font-semibold text-neutral-200 text-xs border-b border-neutral-800 pb-2">
-              Transfer ve Sistem Ayarları
+              {t.transferSettings}
             </h3>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="text-[11px] text-neutral-400 block mb-1">{t.languageLabel}</label>
+                <select
+                  value={lang}
+                  onChange={(e) => onLangChange(e.target.value as Language)}
+                  className="w-full bg-neutral-900 border border-neutral-700 rounded p-1.5 text-neutral-200 text-xs"
+                >
+                  {supportedLanguages.map((l) => (
+                    <option key={l.code} value={l.code}>
+                      {l.flag} {l.nativeName} ({l.englishName})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <div>
                 <label className="text-[11px] text-neutral-400 block mb-1">{t.onFinish}</label>
                 <select
                   value={onFinishAction}
                   onChange={(e) => onChangeOnFinish(e.target.value)}
-                  className="w-full bg-neutral-900 border border-neutral-700 rounded p-1.5 text-neutral-200"
+                  className="w-full bg-neutral-900 border border-neutral-700 rounded p-1.5 text-neutral-200 text-xs"
                 >
                   <option value="do_nothing">{t.doNothing}</option>
                   <option value="close_app">{t.closeApp}</option>
@@ -706,7 +731,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                 <select
                   value={conflictPolicy}
                   onChange={(e) => onChangeConflictPolicy(e.target.value)}
-                  className="w-full bg-neutral-900 border border-neutral-700 rounded p-1.5 text-neutral-200"
+                  className="w-full bg-neutral-900 border border-neutral-700 rounded p-1.5 text-neutral-200 text-xs"
                 >
                   <option value="auto_rename">{t.conflictRename}</option>
                   <option value="older">{t.conflictOlder}</option>
@@ -722,7 +747,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                 className="w-full py-2 px-3 rounded-lg bg-emerald-600/80 hover:bg-emerald-500 text-white font-medium text-xs transition flex items-center justify-center gap-2"
               >
                 <ExternalLink className="w-3.5 h-3.5" />
-                <span>Windows 11 Sağ Tık Menü Entegrasyonunu Yeniden Kaydet</span>
+                <span>{t.registerContextMenu}</span>
               </button>
             </div>
           </div>
@@ -748,7 +773,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
               className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-indigo-600/80 hover:bg-indigo-500 text-white text-xs font-semibold transition"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              <span>Yeniden Başlat</span>
+              <span>{t.restart}</span>
             </button>
           )}
         </div>
@@ -782,7 +807,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-medium transition border border-neutral-700"
                 >
                   <FolderPlus className="w-3.5 h-3.5 text-neutral-400" />
-                  <span>Yeni Aktarım</span>
+                  <span>{t.newTransfer}</span>
                 </button>
               )}
 
@@ -791,7 +816,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                   onClick={onCloseApp}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-rose-600/90 hover:bg-rose-500 text-white text-xs font-semibold transition"
                 >
-                  <span>Kapat</span>
+                  <span>{t.close}</span>
                 </button>
               )}
             </>

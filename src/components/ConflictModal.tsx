@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { ConflictInfo } from "../types";
 import { formatBytes } from "./CompactView";
-import { Language } from "../i18n";
+import { Language, translations } from "../i18n";
 
 interface ConflictModalProps {
   conflict: ConflictInfo | null;
@@ -24,15 +24,17 @@ export const ConflictModal: React.FC<ConflictModalProps> = ({
   lang,
 }) => {
   const [applyToAll, setApplyToAll] = useState(false);
+  const t = translations[lang] || translations.en;
 
   if (!conflict) return null;
 
+  const locale = lang === "tr" ? "tr-TR" : lang === "de" ? "de-DE" : lang === "fr" ? "fr-FR" : lang === "ru" ? "ru-RU" : "en-US";
   const srcDate = conflict.src_modified > 0
-    ? new Date(conflict.src_modified * 1000).toLocaleString(lang === "tr" ? "tr-TR" : "en-US")
-    : "Bilinmiyor";
+    ? new Date(conflict.src_modified * 1000).toLocaleString(locale)
+    : "-";
   const dstDate = conflict.dst_modified > 0
-    ? new Date(conflict.dst_modified * 1000).toLocaleString(lang === "tr" ? "tr-TR" : "en-US")
-    : "Bilinmiyor";
+    ? new Date(conflict.dst_modified * 1000).toLocaleString(locale)
+    : "-";
 
   const isSourceNewer = conflict.src_modified > conflict.dst_modified;
   const isTargetNewer = conflict.dst_modified > conflict.src_modified;
@@ -46,7 +48,7 @@ export const ConflictModal: React.FC<ConflictModalProps> = ({
           <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0" />
           <div className="flex-1 min-w-0">
             <h3 className="text-xs font-bold text-neutral-100 uppercase tracking-wide">
-              {lang === "tr" ? "Dosya Çakışması Algılandı" : "File Conflict Detected"}
+              {t.conflictDetectedTitle}
             </h3>
             <p className="text-[11px] text-neutral-400 font-mono truncate" title={conflict.filename}>
               {conflict.filename}
@@ -57,9 +59,7 @@ export const ConflictModal: React.FC<ConflictModalProps> = ({
         {/* Comparison Cards */}
         <div className="p-4 flex flex-col gap-3 text-xs font-sans">
           <p className="text-neutral-300 text-[11px]">
-            {lang === "tr"
-              ? "Hedef konumda aynı ada sahip bir dosya zaten mevcut. Ne yapmak istersiniz?"
-              : "A file with the same name already exists in the destination. What would you like to do?"}
+            {t.conflictPrompt}
           </p>
 
           <div className="grid grid-cols-2 gap-2.5">
@@ -71,11 +71,11 @@ export const ConflictModal: React.FC<ConflictModalProps> = ({
             }`}>
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-400">
-                  {lang === "tr" ? "Kaynak (Yeni)" : "Source (New)"}
+                  {t.conflictSourceLabel}
                 </span>
                 {isSourceNewer && (
                   <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-950 border border-emerald-800 text-emerald-300 font-semibold">
-                    {lang === "tr" ? "Daha Yeni" : "Newer"}
+                    {t.newerBadge}
                   </span>
                 )}
               </div>
@@ -97,16 +97,16 @@ export const ConflictModal: React.FC<ConflictModalProps> = ({
             }`}>
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">
-                  {lang === "tr" ? "Hedef (Mevcut)" : "Target (Existing)"}
+                  {t.conflictTargetLabel}
                 </span>
                 {isTargetNewer && (
                   <span className="text-[9px] px-1 py-0.2 rounded bg-amber-950 border border-amber-800 text-amber-300 font-semibold">
-                    {lang === "tr" ? "Daha Yeni" : "Newer"}
+                    {t.newerBadge}
                   </span>
                 )}
                 {isSameSize && (
                   <span className="text-[9px] px-1 py-0.2 rounded bg-neutral-800 text-neutral-300 font-semibold">
-                    {lang === "tr" ? "Aynı Boyut" : "Same Size"}
+                    {t.sameSizeBadge}
                   </span>
                 )}
               </div>
@@ -129,11 +129,7 @@ export const ConflictModal: React.FC<ConflictModalProps> = ({
               onChange={(e) => setApplyToAll(e.target.checked)}
               className="rounded bg-neutral-800 border-neutral-700 text-indigo-500 focus:ring-0 cursor-pointer"
             />
-            <span>
-              {lang === "tr"
-                ? "Tüm sonraki çakışmalar için bu eylemi uygula"
-                : "Apply this action to all upcoming conflicts"}
-            </span>
+            <span>{t.applyToAllConflicts}</span>
           </label>
         </div>
 
@@ -144,7 +140,7 @@ export const ConflictModal: React.FC<ConflictModalProps> = ({
             className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-rose-700 hover:bg-rose-600 text-white font-semibold transition"
           >
             <Check className="w-3.5 h-3.5" />
-            <span>{lang === "tr" ? "Üzerine Yaz (Overwrite)" : "Overwrite"}</span>
+            <span>{t.conflictOverwrite}</span>
           </button>
 
           <button
@@ -152,7 +148,7 @@ export const ConflictModal: React.FC<ConflictModalProps> = ({
             className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-indigo-700 hover:bg-indigo-600 text-white font-semibold transition"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            <span>{lang === "tr" ? "Eskileri Değiştir (Older)" : "Replace Older"}</span>
+            <span>{t.conflictOlder}</span>
           </button>
 
           <button
@@ -160,7 +156,7 @@ export const ConflictModal: React.FC<ConflictModalProps> = ({
             className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-medium transition border border-neutral-700"
           >
             <Copy className="w-3.5 h-3.5" />
-            <span>{lang === "tr" ? "Yeniden Adlandır (Rename)" : "Auto Rename"}</span>
+            <span>{t.conflictRename}</span>
           </button>
 
           <button
@@ -168,7 +164,7 @@ export const ConflictModal: React.FC<ConflictModalProps> = ({
             className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-neutral-800 hover:bg-amber-900/80 text-neutral-300 hover:text-white font-medium transition border border-neutral-700"
           >
             <FastForward className="w-3.5 h-3.5" />
-            <span>{lang === "tr" ? "Bu Dosyayı Atla (Skip)" : "Skip"}</span>
+            <span>{t.conflictSkip}</span>
           </button>
         </div>
       </div>
