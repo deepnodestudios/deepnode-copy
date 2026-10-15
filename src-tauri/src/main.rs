@@ -2005,7 +2005,6 @@ fn install_app_update() -> Result<(), String> {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let current_pid = std::process::id();
         let path_str = path.to_string_lossy().to_string();
         let cur_exe_str = current_exe.to_string_lossy().to_string();
         let is_setup = path_str.to_lowercase().contains("setup");
@@ -2017,43 +2016,40 @@ fn install_app_update() -> Result<(), String> {
 
         if is_setup {
             let needs_elevation = cur_exe_str.to_lowercase().contains("program files");
-            let ps_cmd = if needs_elevation {
-                format!("Start-Process -FilePath '{}' -Verb RunAs", path_str.replace('\'', "''"))
+            use std::ffi::OsStr;
+            use std::os::windows::ffi::OsStrExt;
+            let path_wide: Vec<u16> = OsStr::new(&path_str).encode_wide().chain(std::iter::once(0)).collect();
+            let verb = if needs_elevation {
+                windows::core::w!("runas")
             } else {
-                format!("Start-Process -FilePath '{}'", path_str.replace('\'', "''"))
+                windows::core::w!("open")
             };
 
-            std::process::Command::new("powershell")
-                .args(["-NoProfile", "-Command", &ps_cmd])
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn()
-                .map_err(|e| format!("Kurulum başlatılamadı: {}", e))?;
+            unsafe {
+                let res = windows::Win32::UI::Shell::ShellExecuteW(
+                    windows::Win32::Foundation::HWND(std::ptr::null_mut()),
+                    verb,
+                    windows::core::PCWSTR(path_wide.as_ptr()),
+                    windows::core::PCWSTR::null(),
+                    windows::core::PCWSTR::null(),
+                    windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+                );
+                if res.0 as usize <= 32 {
+                    return Err(format!("Kurulum başlatılamadı: ShellExecuteW hata kodu {}", res.0 as usize));
+                }
+            }
         } else {
             // Portable standalone executable:
-            // 1. Wait for current process (PID) to exit cleanly
-            // 2. Overwrite current_exe with downloaded new exe
-            // 3. Relaunch current_exe
-            let ps_script = format!(
-                "try {{ \
-                    Start-Sleep -Milliseconds 600; \
-                    Wait-Process -Id {} -Timeout 10 -ErrorAction SilentlyContinue; \
-                    Move-Item -Force -Path '{}' -Destination '{}'; \
-                    Start-Process -FilePath '{}'; \
-                 }} catch {{ \
-                    Start-Process -FilePath '{}'; \
-                 }}",
-                current_pid,
-                path_str.replace('\'', "''"),
-                cur_exe_str.replace('\'', "''"),
-                cur_exe_str.replace('\'', "''"),
-                path_str.replace('\'', "''")
+            // Use standard cmd with delay to let host exit cleanly, replace file, and restart
+            let cmd_line = format!(
+                "ping 127.0.0.1 -n 2 > nul & copy /y \"{}\" \"{}\" & start \"\" \"{}\"",
+                path_str, cur_exe_str, cur_exe_str
             );
-
-            std::process::Command::new("powershell")
-                .args(["-NoProfile", "-Command", &ps_script])
+            std::process::Command::new("cmd")
+                .args(["/C", &cmd_line])
                 .creation_flags(CREATE_NO_WINDOW)
                 .spawn()
-                .map_err(|e| format!("Güncelleme betiği başlatılamadı: {}", e))?;
+                .map_err(|e| format!("Güncelleme süreci başlatılamadı: {}", e))?;
         }
 
         // Close current application cleanly so file can be overwritten or setup can proceed

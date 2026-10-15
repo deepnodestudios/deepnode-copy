@@ -123,11 +123,14 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose, lang })
 
         // If not portable, or if portable asset not found, fallback to setup.exe
         if (!downloadAssetUrl || downloadAssetUrl === release.html_url) {
-          const setupAsset = release.assets.find(
-            (a: any) =>
-              a.name?.toLowerCase().includes("setup") &&
-              a.name?.toLowerCase().endsWith(".exe")
-          ) || release.assets.find((a: any) => a.name?.toLowerCase().endsWith(".exe"));
+          const setupAsset =
+            release.assets.find((a: any) => a.name?.toLowerCase() === "deepnodecopy_setup.exe") ||
+            release.assets.find(
+              (a: any) =>
+                a.name?.toLowerCase().includes("setup") &&
+                a.name?.toLowerCase().endsWith(".exe")
+            ) ||
+            release.assets.find((a: any) => a.name?.toLowerCase().endsWith(".exe"));
 
           if (setupAsset?.browser_download_url) {
             downloadAssetUrl = setupAsset.browser_download_url;
