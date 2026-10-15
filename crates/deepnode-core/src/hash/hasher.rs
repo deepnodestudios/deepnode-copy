@@ -5,9 +5,10 @@ use sha2::{Sha256, Digest};
 use sha1::Sha1;
 use md5::Md5;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum HashAlgorithm {
+    #[default]
     XxHash3_64,
     XxHash3_128,
     Blake3,
@@ -16,12 +17,7 @@ pub enum HashAlgorithm {
     Sha256,
 }
 
-impl Default for HashAlgorithm {
-    fn default() -> Self {
-        HashAlgorithm::XxHash3_64
-    }
-}
-
+#[allow(clippy::large_enum_variant)]
 pub enum MultiHasher {
     XxHash3_64(Xxh3),
     XxHash3_128(Xxh3),

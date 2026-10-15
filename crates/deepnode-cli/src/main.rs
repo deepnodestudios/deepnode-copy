@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use clap::{Parser, Subcommand, ValueEnum};
 use tokio::sync::mpsc;
@@ -106,10 +106,10 @@ enum CliConflictPolicy {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() {
     let cli = Cli::parse();
 
-    match cli.command {
+    let result = match cli.command {
         Commands::Copy {
             mut paths,
             direct_io,
@@ -119,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
         } => {
             if paths.len() < 2 {
                 eprintln!("Error: Please provide at least one source and a destination directory.");
-                return Ok(());
+                std::process::exit(2);
             }
             let destination = PathBuf::from(paths.pop().unwrap());
             run_transfer(
@@ -130,7 +130,7 @@ async fn main() -> anyhow::Result<()> {
                 verify,
                 hash,
                 conflict,
-            ).await?;
+            ).await
         }
         Commands::Move {
             mut paths,
@@ -141,7 +141,7 @@ async fn main() -> anyhow::Result<()> {
         } => {
             if paths.len() < 2 {
                 eprintln!("Error: Please provide at least one source and a destination directory.");
-                return Ok(());
+                std::process::exit(2);
             }
             let destination = PathBuf::from(paths.pop().unwrap());
             run_transfer(
@@ -152,14 +152,17 @@ async fn main() -> anyhow::Result<()> {
                 verify,
                 hash,
                 conflict,
-            ).await?;
+            ).await
         }
         Commands::Verify { file, expected, hash } => {
-            run_verify(file, expected, hash)?;
+            run_verify(file, expected, hash)
         }
-    }
+    };
 
-    Ok(())
+    if let Err(err) = result {
+        eprintln!("\nError: {}", err);
+        std::process::exit(1);
+    }
 }
 
 async fn run_transfer(
@@ -171,14 +174,13 @@ async fn run_transfer(
     hash: CliHashAlgorithm,
     conflict: CliConflictPolicy,
 ) -> anyhow::Result<()> {
-    println!("DeepNode Copy v0.1.0");
+    println!("DeepNode Copy v{}", env!("CARGO_PKG_VERSION"));
     println!("--------------------------------------------------");
     println!("Scanning files...");
 
     let items = FileScanner::scan(&sources, &destination)?;
     if items.is_empty() {
-        println!("No files found to transfer.");
-        return Ok(());
+        anyhow::bail!("No valid files found to transfer.");
     }
 
     let total_bytes: u64 = items.iter().map(|i| i.size).sum();
@@ -212,6 +214,13 @@ async fn run_transfer(
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     let pause_flag = Arc::new(AtomicBool::new(false));
     let cancel_flag = Arc::new(AtomicBool::new(false));
+    let cancel_flag_ctrlc = Arc::clone(&cancel_flag);
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            eprintln!("\nCanceling transfer (Ctrl+C)...");
+            cancel_flag_ctrlc.store(true, Ordering::SeqCst);
+        }
+    });
 
     let mut coordinator = TransferCoordinator::new(
         config,
@@ -220,6 +229,7 @@ async fn run_transfer(
         pause_flag,
         cancel_flag,
     );
+    coordinator.set_destination_dir(destination.clone());
 
     // Event printing task
     let printer_handle = tokio::spawn(async move {
@@ -269,9 +279,20 @@ async fn run_transfer(
         }
     });
 
-    let _ = coordinator.run().await;
+    let run_res = coordinator.run().await;
     drop(coordinator);
     let _ = printer_handle.await;
+    let stats = run_res?;
+
+    if stats.failed_files > 0 {
+        anyhow::bail!(
+            "Transfer completed with {} failed file(s) ({} succeeded, {} skipped).",
+            stats.failed_files,
+            stats.completed_files,
+            stats.skipped_files
+        );
+    }
+
     Ok(())
 }
 
@@ -281,8 +302,7 @@ fn run_verify(
     hash: CliHashAlgorithm,
 ) -> anyhow::Result<()> {
     if !file.exists() {
-        println!("File not found: {:?}", file);
-        return Ok(());
+        anyhow::bail!("File not found: {:?}", file);
     }
 
     let algo = match hash {
@@ -302,7 +322,7 @@ fn run_verify(
         if calculated.eq_ignore_ascii_case(exp.trim()) {
             println!("RESULT: SUCCESS (Hash matches!)");
         } else {
-            println!("RESULT: FAILED (Expected: {}, Actual: {})", exp.trim(), calculated);
+            anyhow::bail!("RESULT: FAILED (Expected: {}, Actual: {})", exp.trim(), calculated);
         }
     }
 

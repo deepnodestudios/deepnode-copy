@@ -12,6 +12,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { translations, Language } from "../i18n";
+import packageJson from "../../package.json";
 
 interface AboutModalProps {
   isOpen: boolean;
@@ -46,7 +47,15 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose, lang })
   const installTriggeredRef = useRef(false);
 
   const t = translations[lang] || translations.tr;
-  const currentVersion = "0.1.0";
+  const [currentVersion, setCurrentVersion] = useState(packageJson.version);
+
+  useEffect(() => {
+    invoke<string>("get_app_version")
+      .then((ver) => {
+        if (ver) setCurrentVersion(ver);
+      })
+      .catch(() => {});
+  }, []);
 
   const compareVersions = (v1: string, v2: string): number => {
     const parse = (v: string) =>
@@ -81,6 +90,11 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose, lang })
     installTriggeredRef.current = false;
 
     try {
+      const liveVer = await invoke<string>("get_app_version").catch(() => currentVersion);
+      if (liveVer) setCurrentVersion(liveVer);
+
+      const isPortable = await invoke<boolean>("is_portable_app").catch(() => true);
+
       const response = await fetch("https://api.github.com/repos/deepnodestudios/deepnode-copy/releases/latest", {
         headers: { Accept: "application/vnd.github.v3+json" },
       });
@@ -91,18 +105,33 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose, lang })
 
       const release = await response.json();
       const latestTag = release.tag_name || "";
-      const isNewer = compareVersions(latestTag, currentVersion) > 0;
+      const isNewer = compareVersions(latestTag, liveVer || currentVersion) > 0;
 
-      let setupAssetUrl = release.html_url;
+      let downloadAssetUrl = release.html_url;
       if (Array.isArray(release.assets)) {
-        const setupAsset = release.assets.find(
-          (a: any) =>
-            a.name?.toLowerCase().includes("setup") &&
-            a.name?.toLowerCase().endsWith(".exe")
-        ) || release.assets.find((a: any) => a.name?.toLowerCase().endsWith(".exe"));
+        if (isPortable) {
+          // Portable standalone executable priority (e.g. DeepNodeCopy.exe)
+          const portableAsset = release.assets.find(
+            (a: any) =>
+              a.name?.toLowerCase() === "deepnodecopy.exe" ||
+              (a.name?.toLowerCase().endsWith(".exe") && !a.name?.toLowerCase().includes("setup"))
+          );
+          if (portableAsset?.browser_download_url) {
+            downloadAssetUrl = portableAsset.browser_download_url;
+          }
+        }
 
-        if (setupAsset?.browser_download_url) {
-          setupAssetUrl = setupAsset.browser_download_url;
+        // If not portable, or if portable asset not found, fallback to setup.exe
+        if (!downloadAssetUrl || downloadAssetUrl === release.html_url) {
+          const setupAsset = release.assets.find(
+            (a: any) =>
+              a.name?.toLowerCase().includes("setup") &&
+              a.name?.toLowerCase().endsWith(".exe")
+          ) || release.assets.find((a: any) => a.name?.toLowerCase().endsWith(".exe"));
+
+          if (setupAsset?.browser_download_url) {
+            downloadAssetUrl = setupAsset.browser_download_url;
+          }
         }
       }
 
@@ -111,7 +140,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose, lang })
         name: release.name || latestTag,
         notes: release.body || "",
         htmlUrl: release.html_url,
-        downloadUrl: setupAssetUrl,
+        downloadUrl: downloadAssetUrl,
       };
 
       setUpdateData(info);
@@ -146,9 +175,11 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose, lang })
   // Listen to native Tauri Rust update progress events
   useEffect(() => {
     if (!isOpen) return;
+    let isMounted = true;
     let unlisten: (() => void) | null = null;
 
     listen<UpdateProgressPayload>("update_progress", (event) => {
+      if (!isMounted) return;
       const p = event.payload;
       if (p.status === "downloading") {
         setDlStatus("downloading");
@@ -164,11 +195,20 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose, lang })
         setDlStatus("error");
         setDlError(p.error || "Download error");
       }
-    }).then((fn) => {
-      unlisten = fn;
-    });
+    })
+      .then((fn) => {
+        if (!isMounted) {
+          fn();
+        } else {
+          unlisten = fn;
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to setup update_progress listener:", err);
+      });
 
     return () => {
+      isMounted = false;
       if (unlisten) unlisten();
     };
   }, [isOpen]);

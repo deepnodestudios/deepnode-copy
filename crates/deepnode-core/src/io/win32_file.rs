@@ -8,6 +8,8 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, GetFileSizeEx, SetEndOfFile, SetFilePointerEx,
+    GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_READONLY,
+    FILE_WRITE_ATTRIBUTES, INVALID_FILE_ATTRIBUTES,
     FILE_ATTRIBUTE_NORMAL, FILE_FLAGS_AND_ATTRIBUTES,
     FILE_FLAG_NO_BUFFERING, FILE_FLAG_OVERLAPPED, FILE_FLAG_SEQUENTIAL_SCAN,
     FILE_FLAG_WRITE_THROUGH, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
@@ -43,10 +45,12 @@ impl Win32FileHandle {
         };
 
         let path_str = abs_path.to_string_lossy();
-        let extended_path = if !path_str.starts_with(r"\\?\") && !path_str.starts_with(r"\\.\") {
-            format!(r"\\?\{}", path_str)
-        } else {
+        let extended_path = if path_str.starts_with(r"\\?\") || path_str.starts_with(r"\\.\") {
             path_str.to_string()
+        } else if let Some(stripped) = path_str.strip_prefix(r"\\") {
+            format!(r"\\?\UNC\{}", stripped)
+        } else {
+            format!(r"\\?\{}", path_str)
         };
 
         OsStr::new(&extended_path)
@@ -123,6 +127,16 @@ impl Win32FileHandle {
         let disposition = if overwrite { CREATE_ALWAYS } else { OPEN_ALWAYS };
 
         unsafe {
+            // Explorer and Robocopy clear FILE_ATTRIBUTE_READONLY before CREATE_ALWAYS
+            // to avoid Win32 Error 5 (ERROR_ACCESS_DENIED) when updating read-only files.
+            if overwrite {
+                let existing_attrs = GetFileAttributesW(PCWSTR(wide.as_ptr()));
+                if existing_attrs != INVALID_FILE_ATTRIBUTES && (existing_attrs & FILE_ATTRIBUTE_READONLY.0) != 0 {
+                    let cleared = existing_attrs & !FILE_ATTRIBUTE_READONLY.0;
+                    let _ = SetFileAttributesW(PCWSTR(wide.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES(cleared));
+                }
+            }
+
             let handle = CreateFileW(
                 PCWSTR(wide.as_ptr()),
                 FILE_GENERIC_WRITE.0,
@@ -131,7 +145,27 @@ impl Win32FileHandle {
                 disposition,
                 FILE_FLAGS_AND_ATTRIBUTES(flags),
                 HANDLE(std::ptr::null_mut()),
-            ).map_err(|e| {
+            ).or_else(|e| {
+                // Secondary fallback: if ERROR_ACCESS_DENIED (5) occurs on overwrite, force clear and retry
+                let code = GetLastError().0;
+                if code == 5 && overwrite {
+                    let existing_attrs = GetFileAttributesW(PCWSTR(wide.as_ptr()));
+                    if existing_attrs != INVALID_FILE_ATTRIBUTES {
+                        let cleared = existing_attrs & !FILE_ATTRIBUTE_READONLY.0;
+                        let _ = SetFileAttributesW(PCWSTR(wide.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES(cleared));
+                        return CreateFileW(
+                            PCWSTR(wide.as_ptr()),
+                            FILE_GENERIC_WRITE.0,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                            None,
+                            disposition,
+                            FILE_FLAGS_AND_ATTRIBUTES(flags),
+                            HANDLE(std::ptr::null_mut()),
+                        );
+                    }
+                }
+                Err(e)
+            }).map_err(|e| {
                 let code = GetLastError().0;
                 TransferError::Win32 {
                     code,
@@ -151,6 +185,50 @@ impl Win32FileHandle {
         }
     }
 
+    /// Opens a file specifically with FILE_WRITE_ATTRIBUTES for setting timestamps.
+    /// Handles read-only files without ERROR_ACCESS_DENIED.
+    pub fn open_for_timestamps(path: &Path) -> Result<Self> {
+        let wide = Self::to_wide_path(path);
+        unsafe {
+            let res = CreateFileW(
+                PCWSTR(wide.as_ptr()),
+                FILE_WRITE_ATTRIBUTES.0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                None,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                HANDLE(std::ptr::null_mut()),
+            );
+
+            let handle = match res {
+                Ok(h) => h,
+                Err(_) => {
+                    let existing_attrs = GetFileAttributesW(PCWSTR(wide.as_ptr()));
+                    if existing_attrs != INVALID_FILE_ATTRIBUTES && (existing_attrs & FILE_ATTRIBUTE_READONLY.0) != 0 {
+                        let cleared = existing_attrs & !FILE_ATTRIBUTE_READONLY.0;
+                        let _ = SetFileAttributesW(PCWSTR(wide.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES(cleared));
+                    }
+                    CreateFileW(
+                        PCWSTR(wide.as_ptr()),
+                        FILE_WRITE_ATTRIBUTES.0,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                        None,
+                        OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL,
+                        HANDLE(std::ptr::null_mut()),
+                    ).map_err(|e| {
+                        TransferError::Win32 {
+                            code: GetLastError().0,
+                            message: format!("Failed to open file for timestamps: {}", e),
+                        }
+                    })?
+                }
+            };
+
+            Ok(Self { handle })
+        }
+    }
+
     /// Gets exact file size in bytes using GetFileSizeEx.
     pub fn get_size(&self) -> Result<u64> {
         unsafe {
@@ -163,10 +241,10 @@ impl Win32FileHandle {
         }
     }
 
-    /// Pre-allocates file size to minimize disk fragmentation.
+    /// Pre-allocates file size to minimize disk fragmentation without advancing EOF.
     pub fn preallocate_size(&self, size: u64) -> Result<()> {
         unsafe {
-            // First try fast FileAllocationInfo (instantaneous on NTFS without zeroing clusters)
+            // Use FileAllocationInfo (instantaneous on NTFS without advancing EOF or zeroing clusters)
             let alloc_info = windows::Win32::Storage::FileSystem::FILE_ALLOCATION_INFO {
                 AllocationSize: size as i64,
             };
@@ -180,7 +258,18 @@ impl Win32FileHandle {
                 return Ok(());
             }
 
-            // Fallback to SetFilePointerEx + SetEndOfFile
+            // Do NOT fall back to SetEndOfFile before copying data, as that advances the
+            // logical file size ahead of time, leaving a full-sized zero-filled file if the transfer
+            // is cancelled, paused, or encounters an I/O error midway.
+            // On non-NTFS volumes or unsupported file systems, dynamic cluster allocation
+            // during writing is safely used.
+            Ok(())
+        }
+    }
+
+    /// Sets the exact file length using SetFilePointerEx and SetEndOfFile.
+    pub fn set_length(&self, size: u64) -> Result<()> {
+        unsafe {
             SetFilePointerEx(self.handle, size as i64, None, FILE_BEGIN).map_err(|e| {
                 TransferError::Win32 {
                     code: GetLastError().0,
@@ -191,14 +280,6 @@ impl Win32FileHandle {
             SetEndOfFile(self.handle).map_err(|e| TransferError::Win32 {
                 code: GetLastError().0,
                 message: e.to_string(),
-            })?;
-
-            // Reset file pointer back to start
-            SetFilePointerEx(self.handle, 0, None, FILE_BEGIN).map_err(|e| {
-                TransferError::Win32 {
-                    code: GetLastError().0,
-                    message: e.to_string(),
-                }
             })?;
 
             Ok(())
@@ -228,6 +309,19 @@ impl Win32FileHandle {
         }
     }
 
+    /// Reads exact buffer length synchronously in a loop until full or EOF.
+    pub fn read_exact_sync(&self, buffer: &mut [u8]) -> Result<usize> {
+        let mut total_read = 0;
+        while total_read < buffer.len() {
+            let read = self.read_sync(&mut buffer[total_read..])?;
+            if read == 0 {
+                break;
+            }
+            total_read += read;
+        }
+        Ok(total_read)
+    }
+
     /// Writes buffer.len() bytes synchronously.
     pub fn write_sync(&self, buffer: &[u8]) -> Result<usize> {
         unsafe {
@@ -248,6 +342,42 @@ impl Win32FileHandle {
             }
 
             Ok(bytes_written as usize)
+        }
+    }
+
+    /// Writes all buffer bytes synchronously, looping if partial writes occur.
+    pub fn write_all_sync(&self, mut buffer: &[u8]) -> Result<usize> {
+        let total_to_write = buffer.len();
+        unsafe {
+            while !buffer.is_empty() {
+                let mut bytes_written: u32 = 0;
+                let chunk_len = std::cmp::min(buffer.len(), u32::MAX as usize) as u32;
+                let success = WriteFile(
+                    self.handle,
+                    Some(&buffer[..chunk_len as usize]),
+                    Some(&mut bytes_written),
+                    None,
+                );
+
+                if let Err(e) = success {
+                    let code = GetLastError().0;
+                    return Err(TransferError::Win32 {
+                        code,
+                        message: e.to_string(),
+                    });
+                }
+
+                if bytes_written == 0 {
+                    return Err(TransferError::Win32 {
+                        code: 0,
+                        message: "WriteFile wrote 0 bytes unexpectedly".to_string(),
+                    });
+                }
+
+                buffer = &buffer[bytes_written as usize..];
+            }
+
+            Ok(total_to_write)
         }
     }
 

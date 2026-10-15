@@ -25,7 +25,6 @@ import {
   SlidersHorizontal,
   Clock,
   CheckCircle2,
-  RefreshCw,
   Trash2,
   SkipForward,
   RotateCw,
@@ -44,6 +43,7 @@ import {
 import { formatBytes, formatEta } from "./CompactView";
 import { translations, Language, supportedLanguages } from "../i18n";
 import { SpeedChart } from "./SpeedChart";
+import { HistoryView } from "./HistoryView";
 
 interface ExpandedViewProps {
   stats: TransferStats;
@@ -66,6 +66,8 @@ interface ExpandedViewProps {
   onOpenVerify: () => void;
   onOpenAbout: () => void;
   onRegisterContextMenu: () => void;
+  onUnregisterContextMenu?: () => void;
+  isContextMenuRegistered?: boolean;
   onCloseApp?: () => void;
   onMinimizeWindow?: () => void;
   onToggleMaximizeWindow?: () => void;
@@ -87,12 +89,13 @@ interface ExpandedViewProps {
   onAddFiles: () => void;
   onAddFolder: () => void;
   onBrowseDestination: () => void;
-  onRemoveStaged: (index: number) => void;
+  onRemoveStaged: (indices: number[] | number) => void;
   onClearStaged: () => void;
   onStartTransfer: (mode: "copy" | "move", overridePolicy?: string) => void;
   lang: Language;
   onLangChange: (lang: Language) => void;
   isDraggingOver?: boolean;
+  onRerunSession?: (sources: string[], destination: string) => void;
 }
 
 export const getFileIcon = (filename: string) => {
@@ -139,6 +142,7 @@ interface FileRowItemProps {
 }
 
 const areRowPropsEqual = (prev: FileRowItemProps, next: FileRowItemProps) => {
+  if (prev.lang !== next.lang) return false;
   if (prev.file !== next.file) return false;
   if (prev.isSelected !== next.isSelected) return false;
   if (prev.isCurrent !== next.isCurrent) return false;
@@ -258,7 +262,7 @@ const FileRowItem = React.memo<FileRowItemProps>(
           )}
         </div>
 
-        {/* Progress Bar with Percentage (TeraCopy 1:1) */}
+        {/* Progress Bar with Percentage */}
         <div className="col-span-3 flex items-center justify-end gap-2.5 pr-4">
           <div className="flex-1 max-w-[150px] bg-slate-800/80 rounded-full h-2 overflow-hidden border border-slate-700/50 p-[1px]">
             <div
@@ -315,6 +319,7 @@ interface FolderRowItemProps {
 }
 
 const areFolderPropsEqual = (prev: FolderRowItemProps, next: FolderRowItemProps) => {
+  if (prev.lang !== next.lang) return false;
   if (prev.group.id !== next.group.id) return false;
   if (prev.isCollapsed !== next.isCollapsed) return false;
   if (prev.selectedCount !== next.selectedCount) return false;
@@ -443,7 +448,7 @@ const FolderRowItem = React.memo<FolderRowItemProps>(
           )}
         </div>
 
-        {/* Col 10-12: Progress Bar with Percentage (TeraCopy 1:1) */}
+        {/* Col 10-12: Progress Bar with Percentage */}
         <div className="col-span-3 flex items-center justify-end gap-2.5 pr-4">
           <div className="flex-1 max-w-[150px] bg-slate-800/80 rounded-full h-2.5 overflow-hidden border border-slate-700/50 p-[1px]">
             <div
@@ -504,6 +509,8 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
   onMinimize,
   onOpenAbout,
   onRegisterContextMenu,
+  onUnregisterContextMenu,
+  isContextMenuRegistered,
   onCloseApp,
   onMinimizeWindow,
   onToggleMaximizeWindow,
@@ -530,9 +537,17 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
   lang,
   onLangChange,
   isDraggingOver,
+  onRerunSession,
 }) => {
   const t = translations[lang] || translations.tr;
   const [sidebarTab, setSidebarTab] = useState<"queue" | "analytics" | "verify" | "settings" | "history">("queue");
+
+  const handleRerunSessionInternal = (sources: string[], dest: string) => {
+    if (onRerunSession) {
+      onRerunSession(sources, dest);
+    }
+    setSidebarTab("queue");
+  };
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -545,9 +560,12 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
   filesRef.current = files;
   const stagedRef = React.useRef(stagedSources);
   stagedRef.current = stagedSources;
+  const lastAnchorIdRef = React.useRef<number | null>(null);
+  const visibleFileIdsRef = React.useRef<number[]>([]);
 
   const handleToggleSelect = React.useCallback((id: number, e: React.MouseEvent | React.ChangeEvent) => {
     e.stopPropagation();
+    lastAnchorIdRef.current = id;
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -557,21 +575,37 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
   }, []);
 
   const handleSingleSelect = React.useCallback((id: number) => {
+    lastAnchorIdRef.current = id;
     setSelectedIds(new Set([id]));
   }, []);
 
   const handleRangeSelect = React.useCallback((id: number) => {
-    const activeFiles = filesRef.current;
-    const fileIds = activeFiles.map((f) => f.id);
+    const visibleIds = visibleFileIdsRef.current;
+    if (visibleIds.length === 0) return;
+
     setSelectedIds((prev) => {
-      const lastSelected = Array.from(prev).pop();
-      if (lastSelected !== undefined) {
-        const from = fileIds.indexOf(lastSelected);
-        const to = fileIds.indexOf(id);
-        const [min, max] = from < to ? [from, to] : [to, from];
-        const range = fileIds.slice(min, max + 1);
-        return new Set([...Array.from(prev), ...range]);
+      let anchor = lastAnchorIdRef.current;
+      if (anchor === null || !visibleIds.includes(anchor)) {
+        const prevArray = Array.from(prev);
+        for (let i = prevArray.length - 1; i >= 0; i--) {
+          if (visibleIds.includes(prevArray[i])) {
+            anchor = prevArray[i];
+            break;
+          }
+        }
       }
+
+      if (anchor !== null && visibleIds.includes(anchor)) {
+        const from = visibleIds.indexOf(anchor);
+        const to = visibleIds.indexOf(id);
+        if (from !== -1 && to !== -1) {
+          const [min, max] = from < to ? [from, to] : [to, from];
+          const range = visibleIds.slice(min, max + 1);
+          return new Set(range);
+        }
+      }
+
+      lastAnchorIdRef.current = id;
       return new Set([id]);
     });
   }, []);
@@ -579,6 +613,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
   const handleRowContextMenu = React.useCallback((e: React.MouseEvent, file: FileItem) => {
     e.preventDefault();
     e.stopPropagation();
+    lastAnchorIdRef.current = file.id;
     setSelectedIds((prev) => {
       if (!prev.has(file.id)) {
         return new Set([file.id]);
@@ -662,18 +697,29 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
       name: s.replace(/\//g, "\\").split("\\").filter(Boolean).pop() || s,
     }));
 
+    // Sort by depth descending so nested/child folders match their files first, preventing duplication in parent folders
+    const sortedCandidates = [...candidateFolders].sort((a, b) => b.normalized.length - a.normalized.length);
+
     const groups: FolderGroup[] = [];
     const assignedFileIds = new Set<number>();
+    const folderFilesMap = new Map<string, FileItem[]>();
 
-    for (const cf of candidateFolders) {
+    for (const cf of sortedCandidates) {
       const matchingFiles = files.filter((f) => {
+        if (assignedFileIds.has(f.id)) return false;
         const fNorm = norm(f.src_path);
         return fNorm.startsWith(cf.normalized + "\\");
       });
 
       if (matchingFiles.length > 0) {
         matchingFiles.forEach((f) => assignedFileIds.add(f.id));
+        folderFilesMap.set(cf.normalized, matchingFiles);
+      }
+    }
 
+    for (const cf of candidateFolders) {
+      const matchingFiles = folderFilesMap.get(cf.normalized);
+      if (matchingFiles && matchingFiles.length > 0) {
         const totalBytes = matchingFiles.reduce((sum, f) => sum + (f.size || 0), 0);
         let transferredBytes = 0;
         let isCurrentFolder = false;
@@ -772,7 +818,23 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
 
     const standalone = files.filter((f) => !assignedFileIds.has(f.id));
     return { folderGroups: groups, standaloneFiles: standalone };
-  }, [files, stagedSources, stats.current_file_transferred]);
+  }, [files, stagedSources]);
+
+  const visibleFileIds = React.useMemo(() => {
+    const ids: number[] = [];
+    for (const group of folderGroups) {
+      if (!collapsedFolders.has(group.id)) {
+        for (const file of group.files) {
+          ids.push(file.id);
+        }
+      }
+    }
+    for (const file of standaloneFiles) {
+      ids.push(file.id);
+    }
+    return ids;
+  }, [folderGroups, collapsedFolders, standaloneFiles]);
+  visibleFileIdsRef.current = visibleFileIds;
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1093,7 +1155,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                 </div>
               </div>
 
-              {/* Row 2: TeraCopy Queue Management Toolbar */}
+              {/* Row 2: Queue Management Toolbar */}
               <div className="px-4 py-2 bg-[#0a0e19] border-b border-[#172136] flex items-center justify-between gap-2 text-xs flex-wrap">
                 <div className="flex items-center gap-1.5">
                   <button
@@ -1123,10 +1185,10 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                           onRemoveQueued(Array.from(selectedIds));
                         } else if (stagedSources.length > 0) {
                           const remaining = stagedSources.filter((_, idx) => !selectedIds.has(idx));
-                          if (remaining.length === 0) onClearStaged();
-                          else {
-                            // remove sequentially
-                            Array.from(selectedIds).sort((a, b) => b - a).forEach(idx => onRemoveStaged(idx));
+                          if (remaining.length === 0) {
+                            onClearStaged();
+                          } else {
+                            onRemoveStaged(Array.from(selectedIds));
                           }
                         }
                         setSelectedIds(new Set());
@@ -1377,12 +1439,25 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                       <div
                         key={idx}
                         onClick={(e) => {
-                          if (e.ctrlKey) {
+                          if (e.ctrlKey || e.metaKey) {
+                            lastAnchorIdRef.current = idx;
                             const next = new Set(selectedIds);
                             if (next.has(idx)) next.delete(idx);
                             else next.add(idx);
                             setSelectedIds(next);
+                          } else if (e.shiftKey) {
+                            const anchor =
+                              lastAnchorIdRef.current !== null &&
+                              lastAnchorIdRef.current >= 0 &&
+                              lastAnchorIdRef.current < stagedSources.length
+                                ? lastAnchorIdRef.current
+                                : idx;
+                            const [min, max] = anchor < idx ? [anchor, idx] : [idx, anchor];
+                            const range: number[] = [];
+                            for (let i = min; i <= max; i++) range.push(i);
+                            setSelectedIds(new Set(range));
                           } else {
+                            lastAnchorIdRef.current = idx;
                             setSelectedIds(new Set([idx]));
                           }
                         }}
@@ -1546,7 +1621,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                     className="w-full bg-[#121827] border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none"
                   >
                     <option value="always">{lang === "tr" ? "Her Zaman Doğrula (En Yüksek Güvenilirlik)" : "Always Verify"}</option>
-                    <option value="size_only">{lang === "tr" ? "Yalnızca Dosya Boyutu" : "Size Only"}</option>
+                    <option value="ondifference">{lang === "tr" ? "Farklılık Halinde Doğrula" : "On Difference Only"}</option>
                     <option value="never">{lang === "tr" ? "Doğrulama (Maksimum Ham Hız)" : "Never Verify"}</option>
                   </select>
                 </div>
@@ -1554,7 +1629,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                 <div className="pt-2">
                   <span className="text-xs text-emerald-400 font-semibold flex items-center gap-1.5">
                     <CheckCircle2 className="w-4 h-4" />
-                    <span>{lang === "tr" ? "SIMD motoru aktif: Tüm aktarılan baytlar otomatik doğrulanıyor." : "SIMD engine active: all transferred bytes are automatically verified."}</span>
+                    <span>{lang === "tr" ? "SIMD motoru aktif: Aktarılan tüm baytlar otomatik olarak doğrulanıyor." : "SIMD engine active: all transferred bytes are automatically verified."}</span>
                   </span>
                 </div>
               </div>
@@ -1649,60 +1724,73 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
               </div>
 
               {/* Windows Shell Integration */}
-              <div className="p-4 rounded-2xl bg-[#0a0e1a] border border-[#172136] max-w-3xl flex items-center justify-between">
-                <div>
-                  <h4 className="text-xs font-bold text-white">
-                    {lang === "tr" ? "Windows 11 Sağ Tık Menü Entegrasyonu" : "Windows 11 Context Menu Integration"}
-                  </h4>
-                  <p className="text-[11px] text-slate-400 mt-0.5">
-                    {lang === "tr" ? "Windows Gezgini'nde dosya veya klasöre sağ tıkladığınızda 'DeepNode Copy ile Kopyala' menüsünü kaydeder." : "Register Explorer context menu entries."}
+              <div className="p-4 rounded-2xl bg-[#0a0e1a] border border-[#172136] max-w-3xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-xs font-bold text-white">
+                      {lang === "tr" ? "Windows Sağ Tık Menü Entegrasyonu" : "Windows Context Menu Integration"}
+                    </h4>
+                    <span
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold border ${
+                        isContextMenuRegistered
+                          ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+                          : "bg-slate-800 text-slate-400 border-slate-700"
+                      }`}
+                    >
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full ${
+                          isContextMenuRegistered ? "bg-emerald-400 animate-pulse" : "bg-slate-500"
+                        }`}
+                      />
+                      {isContextMenuRegistered
+                        ? lang === "tr"
+                          ? "Etkin"
+                          : "Active"
+                        : lang === "tr"
+                        ? "Kayıtlı Değil"
+                        : "Not Registered"}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    {lang === "tr"
+                      ? "Dosya, klasör ve sürücülere sağ tıklandığında 'DeepNode Copy ile Kopyala' ve 'DeepNode Copy ile Taşı' seçeneklerini ekler (Windows 10 ve 11 desteklenmektedir)."
+                      : "Adds 'Copy with DeepNode Copy' and 'Move with DeepNode Copy' when right-clicking files, folders, or drives in Windows Explorer (Windows 10 & 11 supported)."}
                   </p>
                 </div>
-                <button
-                  onClick={onRegisterContextMenu}
-                  className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs transition cursor-pointer shadow-sm"
-                >
-                  {lang === "tr" ? "Menüyü Kaydet" : "Register Menu"}
-                </button>
+                <div className="flex items-center gap-2 shrink-0">
+                  {isContextMenuRegistered && onUnregisterContextMenu && (
+                    <button
+                      onClick={onUnregisterContextMenu}
+                      className="px-3.5 py-1.5 rounded-xl border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 font-semibold text-xs transition cursor-pointer"
+                    >
+                      {lang === "tr" ? "Menüyü Kaldır" : "Remove Menu"}
+                    </button>
+                  )}
+                  <button
+                    onClick={onRegisterContextMenu}
+                    className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs transition cursor-pointer shadow-sm"
+                  >
+                    {isContextMenuRegistered
+                      ? lang === "tr"
+                        ? "Yeniden Kaydet / Güncelle"
+                        : "Re-register / Update"
+                      : lang === "tr"
+                      ? "Menüyü Kaydet"
+                      : "Register Menu"}
+                  </button>
+                </div>
               </div>
             </div>
           )}
 
-          {/* ── Tab 5: History & Logs ── */}
+          {/* ── Tab 5: Transfer History & Archival Reports ── */}
           {sidebarTab === "history" && (
-            <div className="flex-1 p-6 flex flex-col gap-4 overflow-y-auto">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-base font-bold text-white tracking-tight">
-                    {lang === "tr" ? "Geçmiş Aktarımlar ve Sistem Günlükleri" : "Transfer History & Event Logs"}
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    {lang === "tr" ? "Motor olayları, tamamlanan dosyalar ve hata kayıtları" : "Live session events and error traces"}
-                  </p>
-                </div>
-                {files.some((f) => f.status === "failed") && (
-                  <button
-                    onClick={onRetryFailed}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs transition cursor-pointer shadow-sm"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    <span>{lang === "tr" ? "Hatalı Dosyaları Yeniden Dene" : "Retry Failed"}</span>
-                  </button>
-                )}
-              </div>
-
-              <div className="flex-1 p-4 rounded-2xl bg-[#0a0e1a] border border-[#172136] font-mono text-xs text-slate-300 overflow-y-auto space-y-2">
-                <div className="text-slate-500">[System] Multi-Station Hardware Transfer Coordinator initialized.</div>
-                <div className="text-emerald-400">[Engine] SIMD xxHash3 acceleration active on CPU vector unit.</div>
-                {directIo && <div className="text-blue-400">[Win32] Direct I/O unbuffered streaming enabled.</div>}
-                {destination && <div className="text-slate-300">[Target] Active destination: {destination}</div>}
-                {files.map((f, i) => (
-                  <div key={i} className={f.status === "completed" ? "text-slate-400" : f.status === "failed" ? "text-rose-400" : "text-slate-500"}>
-                    [{f.status.toUpperCase()}] {f.src_path} → {formatBytes(f.size)}
-                  </div>
-                ))}
-              </div>
-            </div>
+            <HistoryView
+              lang={lang}
+              onRerunSession={handleRerunSessionInternal}
+              onShowInFolder={onShowInFolder}
+              onOpenFolder={onOpenFolder}
+            />
           )}
 
           {/* ── Bottom Status & Full Gradient Progress Bar ── */}
@@ -1739,7 +1827,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
         </div>
       </div>
 
-      {/* ── TeraCopy Style Right-Click Context Menu ── */}
+      {/* ── High-Speed Queue Context Menu ── */}
       {contextMenu && (
         <>
           {/* Transparent full-screen overlay to intercept clicks and close menu instantly */}
@@ -1792,9 +1880,9 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                     if (onRemoveQueued) onRemoveQueued(ids);
                   } else if (stagedSources.length > 0) {
                     if (selectedIds.size > 0) {
-                      Array.from(selectedIds).sort((a, b) => b - a).forEach((idx) => onRemoveStaged(idx));
-                    } else {
-                      onRemoveStaged(contextMenu.item!.id);
+                      onRemoveStaged(Array.from(selectedIds));
+                    } else if (contextMenu.item) {
+                      onRemoveStaged(contextMenu.item.id);
                     }
                   }
                   setSelectedIds(new Set());

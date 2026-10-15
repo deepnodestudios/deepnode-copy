@@ -1,14 +1,31 @@
 # DeepNode Copy - Windows 11 Sparse Package Builder, Signer & Shell Register
 param (
     [string]$CertPath = "certificates\DeepNodeCodeSign.pfx",
-    [string]$CertPassword = "DeepNodeSigning2026!",
+    [string]$CertPassword = $(if ($env:DEEPNODE_SIGNING_PASSWORD) { $env:DEEPNODE_SIGNING_PASSWORD } else { "DeepNodeSigning2026!" }),
     [string]$Publisher = "CN=DeepNode Software, O=DeepNode Team, C=TR"
 )
 
 $ErrorActionPreference = "Stop"
 
-$sdkMakeAppx = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\makeappx.exe"
-$sdkSignTool = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe"
+function Find-SdkTool([string]$toolName) {
+    $cmd = Get-Command $toolName -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+
+    $sdkPaths = @(
+        "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\$toolName",
+        "C:\Program Files\Windows Kits\10\bin\*\x64\$toolName"
+    )
+    foreach ($p in $sdkPaths) {
+        $found = Get-Item $p -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+        if ($found -and (Test-Path $found.FullName)) {
+            return $found.FullName
+        }
+    }
+    throw "$toolName bulunamadı! Lütfen Windows 10/11 SDK'nın kurulu olduğundan emin olun."
+}
+
+$sdkMakeAppx = Find-SdkTool "makeappx.exe"
+$sdkSignTool = Find-SdkTool "signtool.exe"
 
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $layoutDir = Join-Path $projectRoot "package_layout"
@@ -37,11 +54,17 @@ if (-not (Test-Path $binDir)) { New-Item -ItemType Directory -Force -Path $binDi
 if (-not (Test-Path $dllSource)) {
     Write-Host ">>> Building deepnode-shell in release mode..." -ForegroundColor Yellow
     & "$env:USERPROFILE\.cargo\bin\cargo.exe" build --release -p deepnode-shell
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to build deepnode-shell. Cargo exit code: $LASTEXITCODE"
+    }
 }
 try {
     Copy-Item $dllSource $binDll -Force -ErrorAction Stop
     Write-Host ">>> Signing bin\deepnode_shell.dll..." -ForegroundColor Cyan
     & $sdkSignTool sign /fd SHA256 /f $fullCertPath /p $CertPassword $binDll
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to sign $binDll. Signtool exit code: $LASTEXITCODE"
+    }
 } catch {
     Write-Host ">>> bin\deepnode_shell.dll is currently loaded by Explorer; using current signed binary." -ForegroundColor Yellow
 }
@@ -70,7 +93,7 @@ $manifestContent = @"
 
   <Identity Name="DeepNodeCopy" ProcessorArchitecture="x64" 
     Publisher="$Publisher" 
-    Version="1.0.0.0"/>  
+    Version="0.2.1.0"/>  
   <Properties>
     <PublisherDisplayName>DeepNode Software</PublisherDisplayName>
     <DisplayName>DeepNode Copy Shell Extension</DisplayName>
@@ -138,20 +161,33 @@ Copy-Item (Join-Path $layoutDir "AppxManifest.xml") (Join-Path $binDir "AppxMani
 # 5. Pack MSIX package with makeappx.exe
 Write-Host ">>> Packing MSIX package with makeappx.exe..." -ForegroundColor Cyan
 & $sdkMakeAppx pack /d $layoutDir /p $msixPath /nv
-
-if (-not (Test-Path $msixPath)) {
-    throw "MSIX package creation failed."
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $msixPath)) {
+    throw "MSIX package creation failed with exit code $LASTEXITCODE."
 }
 Copy-Item $msixPath $binMsixPath -Force
 
 # 6. Sign package with trusted code-signing certificate
 Write-Host ">>> Signing MSIX package with DeepNodeCodeSign.pfx..." -ForegroundColor Cyan
 & $sdkSignTool sign /fd SHA256 /f $fullCertPath /p $CertPassword $msixPath
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to sign $msixPath. Signtool exit code: $LASTEXITCODE"
+}
 & $sdkSignTool sign /fd SHA256 /f $fullCertPath /p $CertPassword $binMsixPath
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to sign $binMsixPath. Signtool exit code: $LASTEXITCODE"
+}
 
 # Verify signature
 Write-Host ">>> Verifying signature..." -ForegroundColor Cyan
 & $sdkSignTool verify /pa $msixPath
+if ($LASTEXITCODE -ne 0) {
+    throw "MSIX signature verification failed for $msixPath. Signtool exit code: $LASTEXITCODE"
+}
+$sig = Get-AuthenticodeSignature $msixPath
+if ($sig.Status -ne "Valid") {
+    throw "MSIX Authenticode signature verification failed: $($sig.StatusMessage) ($($sig.Status))"
+}
+Write-Host ">>> MSIX Package signature successfully verified: $($sig.Status)" -ForegroundColor Green
 
 # 7. Register COM Class IDs in Registry for both Context Menu and DragDrop Handlers
 Write-Host ">>> Registering COM InProcServer32 & DragDropHandlers via .NET Registry..." -ForegroundColor Cyan
@@ -216,12 +252,13 @@ Write-Host ">>> Registering Sparse MSIX Package via Add-AppxPackage..." -Foregro
 try {
     $existing = Get-AppxPackage -Name "DeepNodeCopy" -ErrorAction SilentlyContinue
     if ($existing) {
-        Remove-AppxPackage -Package $existing.PackageFullName -ErrorAction SilentlyContinue
+        Remove-AppxPackage -Package $existing.PackageFullName -ErrorAction Stop
     }
-    Add-AppxPackage -Path $msixPath
+    Add-AppxPackage -Path $msixPath -ErrorAction Stop
     Write-Host ">>> DeepNodeCopy.msix package registered successfully in WindowsApps!" -ForegroundColor Green
 } catch {
-    Write-Host ">>> Warning on Add-AppxPackage: $_" -ForegroundColor Yellow
+    Write-Host ">>> ERROR on Add-AppxPackage: $_" -ForegroundColor Red
+    throw "MSIX package registration failed: $_"
 }
 
 Write-Host "`n>>> SUCCESS: Production Windows 11 context menu and drag-drop interceptors configured!" -ForegroundColor Green

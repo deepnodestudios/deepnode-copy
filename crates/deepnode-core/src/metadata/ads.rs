@@ -70,12 +70,20 @@ impl AdsManager {
             let src_stream_path = format!("{}{}", src.to_string_lossy(), stream_clean);
             let dst_stream_path = format!("{}{}", dst.to_string_lossy(), stream_clean);
 
-            if let (Ok(mut reader), Ok(mut writer)) = (
-                std::fs::File::open(Path::new(&src_stream_path)),
-                std::fs::File::create(Path::new(&dst_stream_path)),
-            ) {
-                let _ = std::io::copy(&mut reader, &mut writer);
-            }
+            let mut reader = std::fs::File::open(Path::new(&src_stream_path))
+                .map_err(|e| crate::error::TransferError::Io(format!(
+                    "Failed to open source stream {}: {}", src_stream_path, e
+                )))?;
+
+            let mut writer = std::fs::File::create(Path::new(&dst_stream_path))
+                .map_err(|e| crate::error::TransferError::Io(format!(
+                    "Failed to create target stream {}: {}", dst_stream_path, e
+                )))?;
+
+            std::io::copy(&mut reader, &mut writer)
+                .map_err(|e| crate::error::TransferError::Io(format!(
+                    "Failed to copy stream data to {}: {}", dst_stream_path, e
+                )))?;
         }
         Ok(())
     }

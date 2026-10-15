@@ -8,8 +8,8 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ["Inter", "system-ui", "sans-serif"],
-        mono: ['"JetBrains Mono"', "monospace"],
+        sans: ["Inter", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", "sans-serif"],
+        mono: ['"JetBrains Mono"', '"Cascadia Code"', '"Consolas"', '"Courier New"', "monospace"],
       },
       colors: {
         brand: {

@@ -4,6 +4,15 @@ import * as Sentry from "@sentry/react";
 import { invoke } from "@tauri-apps/api/core";
 import App from "./App";
 import "./index.css";
+import packageJson from "../package.json";
+
+try {
+  const savedLang = localStorage.getItem("deepnode_copy_lang") || "tr";
+  document.documentElement.lang = savedLang;
+  document.documentElement.dir = savedLang === "ar" ? "rtl" : "ltr";
+} catch {
+  document.documentElement.lang = "tr";
+}
 
 const SENTRY_DSN =
   import.meta.env.VITE_SENTRY_DSN ||
@@ -11,7 +20,7 @@ const SENTRY_DSN =
 
 Sentry.init({
   dsn: SENTRY_DSN,
-  release: "deepnode-copy@0.1.0",
+  release: `deepnode-copy@${packageJson.version}`,
   environment: import.meta.env.DEV ? "development" : "production",
   tracesSampleRate: 1.0,
 });

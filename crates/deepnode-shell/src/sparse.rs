@@ -19,7 +19,7 @@ impl SparsePackage {
   IgnorableNamespaces="desktop10">
 
   <Identity Name="{package_name}" ProcessorArchitecture="neutral" 
-    Publisher="{publisher_id}" Version="1.0.0.0"/>  
+    Publisher="{publisher_id}" Version="0.2.1.0"/>  
   <Properties>
     <PublisherDisplayName>DeepNode</PublisherDisplayName>
     <DisplayName>DeepNode Copy Shell Extension</DisplayName>
@@ -68,21 +68,61 @@ impl SparsePackage {
         )
     }
 
-    /// Registers the sparse signed package on Windows 11 using PowerShell Add-AppxPackage cmdlet.
-    pub fn register_sparse_package(msix_path: &Path) -> std::io::Result<()> {
-        info!("Registering Windows 11 sparse package: {:?}", msix_path);
+    /// Registers the signed package on Windows 11 using PowerShell Add-AppxPackage cmdlet.
+    /// Handles both loose AppxManifest.xml (with -Register) and packaged .msix/.appx (without -Register).
+    pub fn register_sparse_package(package_path: &Path) -> std::io::Result<()> {
+        info!("Registering Windows 11 package: {:?}", package_path);
+        let path_str = package_path.to_string_lossy().to_string();
+        let is_manifest = package_path.extension().map(|e| e.eq_ignore_ascii_case("xml")).unwrap_or(false);
+
+        let ps_script = if is_manifest {
+            format!(
+                "$existing = Get-AppxPackage -Name '*DeepNode*' -ErrorAction SilentlyContinue; \
+                 if ($existing) {{ Remove-AppxPackage -Package $existing.PackageFullName -ErrorAction SilentlyContinue }}; \
+                 Add-AppxPackage -Path '{}' -Register -DisableDevelopmentMode -ErrorAction Stop",
+                path_str
+            )
+        } else {
+            format!(
+                "$existing = Get-AppxPackage -Name '*DeepNode*' -ErrorAction SilentlyContinue; \
+                 if ($existing) {{ Remove-AppxPackage -Package $existing.PackageFullName -ErrorAction SilentlyContinue }}; \
+                 Add-AppxPackage -Path '{}' -ErrorAction Stop",
+                path_str
+            )
+        };
+
         let status = std::process::Command::new("powershell.exe")
             .arg("-NoProfile")
+            .arg("-NonInteractive")
             .arg("-Command")
-            .arg(format!("Add-AppxPackage -Path '{}' -Register", msix_path.display()))
+            .arg(ps_script)
             .status()?;
 
         if status.success() {
             Ok(())
         } else {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Failed to register sparse package",
+            Err(std::io::Error::other(format!(
+                "Failed to register Windows 11 package: {:?}",
+                package_path
+            )))
+        }
+    }
+
+    /// Unregisters the Windows 11 package using PowerShell Remove-AppxPackage cmdlet.
+    pub fn unregister_sparse_package() -> std::io::Result<()> {
+        let ps_script = "Get-AppxPackage -Name '*DeepNode*' -ErrorAction SilentlyContinue | Remove-AppxPackage -ErrorAction SilentlyContinue";
+        let status = std::process::Command::new("powershell.exe")
+            .arg("-NoProfile")
+            .arg("-NonInteractive")
+            .arg("-Command")
+            .arg(ps_script)
+            .status()?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(
+                "Failed to unregister Windows 11 package",
             ))
         }
     }

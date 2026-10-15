@@ -23,6 +23,17 @@ export const VerifyModal: React.FC<VerifyModalProps> = ({ isOpen, onClose, lang 
   if (!isOpen) return null;
   const t = translations[lang];
 
+  const handleBrowseFile = async () => {
+    try {
+      const files = await invoke<string[]>("pick_source_files");
+      if (files && files.length > 0) {
+        setFilePath(files[0]);
+      }
+    } catch {
+      // dialog cancelled
+    }
+  };
+
   const handlePasteClipboard = async () => {
     try {
       const text = await navigator.clipboard.readText();
@@ -77,7 +88,16 @@ export const VerifyModal: React.FC<VerifyModalProps> = ({ isOpen, onClose, lang 
 
         <div className="flex flex-col gap-3 text-xs">
           <div>
-            <label className="text-neutral-400 block mb-1">Target File Path</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-neutral-400">Target File Path</label>
+              <button
+                type="button"
+                onClick={handleBrowseFile}
+                className="flex items-center gap-1 text-[11px] text-indigo-400 hover:text-indigo-300 cursor-pointer"
+              >
+                Browse...
+              </button>
+            </div>
             <input
               type="text"
               value={filePath}

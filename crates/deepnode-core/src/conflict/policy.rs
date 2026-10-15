@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ConflictPolicy {
     /// Overwrite the target file
@@ -20,13 +20,8 @@ pub enum ConflictPolicy {
     /// Overwrite only if destination file is smaller than source
     ReplaceIfSmaller,
     /// Ask user via UI modal
+    #[default]
     AskUser,
-}
-
-impl Default for ConflictPolicy {
-    fn default() -> Self {
-        ConflictPolicy::AskUser
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

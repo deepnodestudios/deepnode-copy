@@ -241,7 +241,7 @@ export const translations: Record<Language, TranslationKeys> = {
     "newerBadge": "Daha Yeni",
     "sameSizeBadge": "Aynı Boyut",
     "applyToAllConflicts": "Tüm sonraki çakışmalar için bu eylemi uygula",
-    "canceledSummary": "Kopyalama işlemi iptal edildi. Kısmi aktarılan geçici dosyalar hedeften silindi.",
+    "canceledSummary": "Kopyalama işlemi iptal edildi. Kısmen aktarılan geçici dosyalar hedeften silindi.",
     "completedSummary": "Tüm dosyalar başarıyla aktarıldı.",
     "noFilesQueued": "Kuyrukta dosya yok",
     "selectedItems": "Seçili",

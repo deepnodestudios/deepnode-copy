@@ -9,4 +9,7 @@ pub mod queue;
 pub mod util;
 
 pub use error::{Result, TransferError};
-pub use util::{clean_path_str, read_file_list, sanitize_path};
+pub use util::{
+    clean_path_str, is_deepnode_temp_list, is_reserved_or_device_path, read_file_list,
+    resolve_star_path, sanitize_path, validate_filesystem_path, StarPathResolution,
+};

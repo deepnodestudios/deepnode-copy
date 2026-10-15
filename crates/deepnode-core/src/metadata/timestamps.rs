@@ -13,6 +13,16 @@ pub struct FileTimestamps {
 }
 
 impl FileTimestamps {
+    /// Converts a SystemTime to a Windows FILETIME.
+    pub fn system_time_to_filetime(st: std::time::SystemTime) -> FILETIME {
+        let dur = st.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap_or_default();
+        let intervals = (dur.as_secs() + 11644473600) * 10_000_000 + dur.subsec_nanos() as u64 / 100;
+        FILETIME {
+            dwLowDateTime: intervals as u32,
+            dwHighDateTime: (intervals >> 32) as u32,
+        }
+    }
+
     /// Reads timestamps from a file handle.
     pub fn read(handle: &Win32FileHandle) -> Result<Self> {
         let mut creation = FILETIME::default();
@@ -59,8 +69,8 @@ impl FileTimestamps {
         let src_handle = Win32FileHandle::open_read(src, false, false)?;
         let timestamps = Self::read(&src_handle)?;
 
-        // Open destination with GENERIC_WRITE to set timestamps
-        let dst_handle = Win32FileHandle::open_write(dst, false, false, false)?;
+        // Open destination specifically for timestamps (handles read-only files)
+        let dst_handle = Win32FileHandle::open_for_timestamps(dst)?;
         timestamps.apply(&dst_handle)
     }
 }

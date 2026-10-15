@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Folder, Zap, RefreshCw, Settings, X, ArrowDown } from "lucide-react";
 import { translations, Language } from "../i18n";
+import packageJson from "../../package.json";
 
 interface CopyPasteOption {
   id: string;
@@ -32,7 +33,14 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
   lang = "tr",
 }) => {
   const [selectedIndex, setSelectedIndex] = useState(1); // Default to DeepNode Copy
+  const [isSubmitted, setIsSubmitted] = useState(false);
   const t = translations[lang] || translations.tr;
+
+  const handleSelectOption = (action: () => void) => {
+    if (isSubmitted) return;
+    setIsSubmitted(true);
+    action();
+  };
 
   const options: CopyPasteOption[] = [
     {
@@ -66,6 +74,12 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
   ];
 
   useEffect(() => {
+    if (isOpen) {
+      setIsSubmitted(false);
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "ArrowDown") {
@@ -76,7 +90,10 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
         setSelectedIndex((prev) => (prev - 1 + options.length) % options.length);
       } else if (e.key === "Enter") {
         e.preventDefault();
-        options[selectedIndex]?.action();
+        const selected = options[selectedIndex];
+        if (selected) {
+          handleSelectOption(selected.action);
+        }
       } else if (e.key === "Escape") {
         e.preventDefault();
         onClose();
@@ -84,7 +101,7 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, selectedIndex, options]);
+  }, [isOpen, selectedIndex, options, isSubmitted]);
 
   if (!isOpen) return null;
 
@@ -137,9 +154,11 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
             return (
               <div
                 key={opt.id}
-                onClick={opt.action}
-                onMouseEnter={() => setSelectedIndex(idx)}
+                onClick={() => handleSelectOption(opt.action)}
+                onMouseEnter={() => !isSubmitted && setSelectedIndex(idx)}
                 className={`flex items-center gap-3.5 px-3.5 py-2.5 rounded-lg cursor-pointer transition text-left ${
+                  isSubmitted ? "opacity-60 pointer-events-none cursor-not-allowed " : ""
+                }${
                   isSelected
                     ? "bg-indigo-600/90 text-white shadow-md shadow-indigo-950"
                     : "hover:bg-neutral-800/60 text-neutral-200"
@@ -166,7 +185,7 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
         {/* Footer tip */}
         <div className="px-4 py-2 bg-neutral-950/70 border-t border-neutral-800/80 flex items-center justify-between text-[11px] text-neutral-500 font-mono">
           <span>Enter: {t.copy} | Esc: {t.cancel}</span>
-          <span className="text-indigo-400">DeepNode v0.1.0</span>
+          <span className="text-indigo-400">DeepNode v{packageJson.version}</span>
         </div>
       </div>
     </div>

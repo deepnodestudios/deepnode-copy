@@ -20,6 +20,32 @@ use crate::metadata::ads::AdsManager;
 use crate::metadata::attributes::FileAttributes;
 use crate::metadata::timestamps::FileTimestamps;
 use crate::vss::shadow_copy::VssManager;
+use crate::io::win32_file::Win32FileHandle;
+use windows::core::PCWSTR;
+use windows::Win32::Storage::FileSystem::{DeleteFileW, SetFileAttributesW, FILE_ATTRIBUTE_NORMAL};
+
+fn delete_source_after_move(src_path: &Path) -> std::io::Result<()> {
+    if !src_path.exists() {
+        return Ok(());
+    }
+    if let Ok(metadata) = std::fs::metadata(src_path) {
+        let mut perms = metadata.permissions();
+        if perms.readonly() {
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            let _ = std::fs::set_permissions(src_path, perms);
+        }
+    }
+    std::fs::remove_file(src_path).or_else(|_| {
+        let wide = Win32FileHandle::to_wide_path(src_path);
+        unsafe {
+            let _ = SetFileAttributesW(PCWSTR(wide.as_ptr()), FILE_ATTRIBUTE_NORMAL);
+            DeleteFileW(PCWSTR(wide.as_ptr())).map_err(|e| {
+                std::io::Error::new(std::io::ErrorKind::PermissionDenied, e.to_string())
+            })
+        }
+    })
+}
 
 pub struct TransferCoordinator {
     config: TransferConfig,
@@ -90,7 +116,9 @@ impl TransferCoordinator {
         for i in from_idx..self.items.len() {
             if self.items[i].status == FileItemStatus::Copying {
                 self.items[i].status = FileItemStatus::Canceled;
-                self.cleanup_cancelled_item(&self.items[i].dst_path);
+                if self.items[i].bytes_transferred > 0 {
+                    self.cleanup_cancelled_item(&self.items[i].dst_path);
+                }
             } else if self.items[i].status == FileItemStatus::Pending {
                 self.items[i].status = FileItemStatus::Canceled;
                 // Never delete Pending files - they were never written to by this transfer!
@@ -107,16 +135,16 @@ impl TransferCoordinator {
             if let Some(first) = self.items.first() {
                 let rel_components = first.relative_path.components().count();
                 let mut inferred = first.dst_path.as_path();
-                for _ in 0..rel_components {
-                    if let Some(p) = inferred.parent() {
-                        inferred = p;
+                if rel_components > 0 {
+                    for _ in 0..rel_components {
+                        if let Some(p) = inferred.parent() {
+                            inferred = p;
+                        }
                     }
+                } else if let Some(p) = inferred.parent() {
+                    inferred = p;
                 }
-                if let Some(p) = inferred.parent() {
-                    self.destination_dir = Some(p.to_path_buf());
-                } else {
-                    self.destination_dir = Some(inferred.to_path_buf());
-                }
+                self.destination_dir = Some(inferred.to_path_buf());
             }
         }
 
@@ -147,6 +175,17 @@ impl TransferCoordinator {
                 return Err(TransferError::Canceled);
             }
 
+            // Handle pause state between files before touching the next file
+            while self.pause_flag.load(Ordering::Relaxed) {
+                if self.cancel_flag.load(Ordering::SeqCst) {
+                    info!("TransferCoordinator canceled while paused before processing file idx {}", idx);
+                    self.mark_remaining_canceled(idx);
+                    let _ = self.event_tx.send(EngineEvent::TransferCanceled);
+                    return Err(TransferError::Canceled);
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            }
+
             let is_skipped = {
                 let id = self.items[idx].id;
                 let in_set = if let Some(ref s_ids) = self.skipped_ids {
@@ -171,8 +210,6 @@ impl TransferCoordinator {
             }
 
             let mut item = self.items[idx].clone();
-            item.status = FileItemStatus::Copying;
-            self.items[idx].status = FileItemStatus::Copying;
 
             stats.current_file_name = item
                 .src_path
@@ -183,15 +220,22 @@ impl TransferCoordinator {
             stats.current_file_size = item.size;
             stats.current_file_transferred = 0;
 
-            info!("Starting file transfer [{}/{}]: {} ({} bytes)", idx + 1, total_files, stats.current_file_name, item.size);
-
-            let _ = self.event_tx.send(EngineEvent::FileStarted(item.clone()));
-            let _ = self.event_tx.send(EngineEvent::FileProgress {
-                id: item.id,
-                transferred: 0,
-                total: item.size,
-            });
-            let _ = self.event_tx.send(EngineEvent::ProgressUpdated(stats.clone()));
+            // Probe target prior to transfer to identify if this is a differing/modified file
+            let dst_meta_before = std::fs::metadata(&item.dst_path).ok();
+            let had_difference = match dst_meta_before {
+                Some(ref dm) => {
+                    let size_diff = dm.len() != item.size;
+                    let time_diff = match (
+                        std::fs::metadata(&item.src_path).ok().and_then(|m| m.modified().ok()),
+                        dm.modified().ok(),
+                    ) {
+                        (Some(st), Some(dt)) => st != dt,
+                        _ => true,
+                    };
+                    size_diff || time_diff
+                }
+                None => true,
+            };
 
             // Conflict resolution
             let resolution = ConflictResolver::resolve(
@@ -254,9 +298,17 @@ impl TransferCoordinator {
 
                         let _ = self.event_tx.send(EngineEvent::ConflictDetected(conflict_info));
 
-                        // Wait for response from frontend or cancellation
+                        // Wait for response from frontend, cancellation, or timeout
+                        let conflict_timeout = Duration::from_secs(self.config.retry_timeout_secs.max(30));
                         let choice_res = tokio::select! {
                             res = rx => res.ok(),
+                            _ = tokio::time::sleep(conflict_timeout) => {
+                                warn!("Conflict resolution timed out after {:?} for file {:?}", conflict_timeout, item.dst_path);
+                                Some(ConflictResolutionChoice {
+                                    action: "skip".to_string(),
+                                    apply_to_all: false,
+                                })
+                            }
                             _ = async {
                                 loop {
                                     if self.cancel_flag.load(Ordering::SeqCst) {
@@ -268,7 +320,9 @@ impl TransferCoordinator {
                         };
 
                         if self.cancel_flag.load(Ordering::SeqCst) || choice_res.is_none() {
-                            self.mark_remaining_canceled(idx);
+                            item.status = FileItemStatus::Canceled;
+                            self.items[idx] = item;
+                            self.mark_remaining_canceled(idx + 1);
                             let _ = self.event_tx.send(EngineEvent::TransferCanceled);
                             return Err(TransferError::Canceled);
                         }
@@ -326,6 +380,19 @@ impl TransferCoordinator {
                 ConflictResolutionAction::ProceedOverwrite => {}
             }
 
+            item.status = FileItemStatus::Copying;
+            self.items[idx].status = FileItemStatus::Copying;
+
+            info!("Starting file transfer [{}/{}]: {} ({} bytes)", idx + 1, total_files, stats.current_file_name, item.size);
+
+            let _ = self.event_tx.send(EngineEvent::FileStarted(item.clone()));
+            let _ = self.event_tx.send(EngineEvent::FileProgress {
+                id: item.id,
+                transferred: 0,
+                total: item.size,
+            });
+            let _ = self.event_tx.send(EngineEvent::ProgressUpdated(stats.clone()));
+
             // Transfer single file with smart retry loop
             let copy_result = self.copy_with_retry(&mut item, &copier, &mut stats, &mut speed_calc).await;
 
@@ -350,9 +417,15 @@ impl TransferCoordinator {
                     let _ = self.event_tx.send(EngineEvent::ProgressUpdated(stats.clone()));
                     continue;
                 }
-                Ok(bytes_transferred) => {
+                Ok((bytes_transferred, effective_src_path)) => {
                     // Post-copy verification
-                    if self.config.verify_mode == VerifyMode::Always && item.size > 0 {
+                    let should_verify = match self.config.verify_mode {
+                        VerifyMode::Always => item.size > 0,
+                        VerifyMode::Never => false,
+                        VerifyMode::OnDifferenceOnly => item.size > 0 && had_difference,
+                    };
+
+                    if should_verify {
                         if self.cancel_flag.load(Ordering::SeqCst) {
                             self.cleanup_cancelled_item(&item.dst_path);
                             item.status = FileItemStatus::Canceled;
@@ -362,11 +435,29 @@ impl TransferCoordinator {
                             return Err(TransferError::Canceled);
                         }
                         let _ = self.event_tx.send(EngineEvent::VerificationStarted(item.clone()));
-                        let verify_res = HashVerifier::verify_files(
-                            &item.src_path,
-                            &item.dst_path,
-                            self.config.hash_algorithm,
-                        );
+                        let verify_res = if let Some(ref src_h) = item.src_hash {
+                            match HashVerifier::compute_file_hash(&item.dst_path, self.config.hash_algorithm, true) {
+                                Ok(dst_h) => {
+                                    item.dst_hash = Some(dst_h.clone());
+                                    if src_h.eq_ignore_ascii_case(&dst_h) {
+                                        Ok(true)
+                                    } else {
+                                        Err(TransferError::HashMismatch {
+                                            path: item.dst_path.to_string_lossy().to_string(),
+                                            expected: src_h.clone(),
+                                            actual: dst_h,
+                                        })
+                                    }
+                                }
+                                Err(e) => Err(e),
+                            }
+                        } else {
+                            HashVerifier::verify_files(
+                                &effective_src_path,
+                                &item.dst_path,
+                                self.config.hash_algorithm,
+                            )
+                        };
 
                         match verify_res {
                             Ok(_) => {
@@ -394,6 +485,20 @@ impl TransferCoordinator {
                         }
                     }
 
+                    // Check if skip was requested during copy or verification
+                    if self.skip_flag.load(Ordering::SeqCst) {
+                        self.skip_flag.store(false, Ordering::SeqCst);
+                        self.cleanup_cancelled_item(&item.dst_path);
+                        item.status = FileItemStatus::Skipped;
+                        stats.skipped_files += 1;
+                        let _ = self.event_tx.send(EngineEvent::FileSkipped {
+                            item: item.clone(),
+                            reason: "Skipped by user during verification".to_string(),
+                        });
+                        self.items[idx] = item;
+                        continue;
+                    }
+
                     // Check cancellation immediately after copy/verify
                     if self.cancel_flag.load(Ordering::SeqCst) {
                         self.cleanup_cancelled_item(&item.dst_path);
@@ -404,29 +509,65 @@ impl TransferCoordinator {
                         return Err(TransferError::Canceled);
                     }
 
-                    // Metadata preservation
-                    if self.config.preserve_timestamps {
-                        let _ = FileTimestamps::copy_between_paths(&item.src_path, &item.dst_path);
-                    }
-                    if self.config.preserve_attributes {
-                        let _ = FileAttributes::copy_attributes(&item.src_path, &item.dst_path);
-                    }
+                    // Metadata preservation (read from shadow copy if VSS was used to bypass locks)
+                    let meta_src = if effective_src_path != item.src_path {
+                        &effective_src_path
+                    } else {
+                        &item.src_path
+                    };
+
+                    let mut meta_errors: Vec<String> = Vec::new();
+
+                    // 1. Alternate Data Streams (ADS) - must be written BEFORE timestamps
+                    // because writing/modifying any ADS stream automatically updates LastWriteTime on NTFS!
                     if self.config.preserve_ads {
-                        let _ = AdsManager::copy_alternate_streams(&item.src_path, &item.dst_path);
-                    }
-                    if self.config.preserve_acl {
-                        let _ = SecurityAcl::copy_dacl(&item.src_path, &item.dst_path);
+                        if let Err(e) = AdsManager::copy_alternate_streams(meta_src, &item.dst_path) {
+                            warn!("Failed to copy ADS streams for {:?}: {}", item.dst_path, e);
+                            meta_errors.push(format!("ADS kopyalanamadı: {}", e));
+                        }
                     }
 
-                    // NTFS ADS checksum writing
+                    // 2. NTFS ADS checksum writing - must also occur BEFORE timestamps
                     if self.config.write_checksum_to_ads {
                         if let Some(ref h) = item.src_hash {
-                            let _ = HashVerifier::write_hash_to_ads(
+                            if let Err(e) = HashVerifier::write_hash_to_ads(
                                 &item.dst_path,
                                 self.config.hash_algorithm,
                                 h,
-                            );
+                            ) {
+                                warn!("Failed to write checksum to ADS for {:?}: {}", item.dst_path, e);
+                                meta_errors.push(format!("ADS sağlama yazılamadı: {}", e));
+                            }
                         }
+                    }
+
+                    // 3. Security ACLs
+                    if self.config.preserve_acl {
+                        if let Err(e) = SecurityAcl::copy_dacl(meta_src, &item.dst_path) {
+                            warn!("Failed to copy security ACL for {:?}: {}", item.dst_path, e);
+                            meta_errors.push(format!("ACL kopyalanamadı: {}", e));
+                        }
+                    }
+
+                    // 4. Timestamps - applied AFTER all file and ADS stream writes have finished
+                    if self.config.preserve_timestamps {
+                        if let Err(e) = FileTimestamps::copy_between_paths(meta_src, &item.dst_path) {
+                            warn!("Failed to copy timestamps for {:?}: {}", item.dst_path, e);
+                            meta_errors.push(format!("Zaman damgası kopyalanamadı: {}", e));
+                        }
+                    }
+
+                    // 5. Attributes (READONLY, HIDDEN, SYSTEM) - MUST BE APPLIED LAST
+                    // so that setting READONLY does not block any previous stream/timestamp write operations
+                    if self.config.preserve_attributes {
+                        if let Err(e) = FileAttributes::copy_attributes(meta_src, &item.dst_path) {
+                            warn!("Failed to copy file attributes for {:?}: {}", item.dst_path, e);
+                            meta_errors.push(format!("Öznitelikler kopyalanamadı: {}", e));
+                        }
+                    }
+
+                    if !meta_errors.is_empty() && item.error_message.is_none() {
+                        item.error_message = Some(meta_errors.join("; "));
                     }
 
                     // Collect checksum manifest records
@@ -436,9 +577,27 @@ impl TransferCoordinator {
                         }
                     }
 
-                    // If Move mode, delete source upon verified transfer
+                    // If Move mode, verify destination integrity and delete source file
                     if self.config.mode == TransferMode::Move {
-                        let _ = std::fs::remove_file(&item.src_path);
+                        let dst_exists = item.dst_path.exists();
+                        let dst_size = std::fs::metadata(&item.dst_path).map(|m| m.len()).unwrap_or(0);
+                        if dst_exists && (item.size == 0 || dst_size == item.size) {
+                            if let Err(e) = delete_source_after_move(&item.src_path) {
+                                warn!("Failed to delete source file after move: {:?}: {}", item.src_path, e);
+                                item.error_message = Some(format!("Copied to destination but failed to delete source: {}", e));
+                            }
+                        } else {
+                            error!("Move failed: destination file missing or truncated ({:?})", item.dst_path);
+                            item.status = FileItemStatus::Failed;
+                            item.error_message = Some("Destination file missing or size mismatch after move".to_string());
+                            stats.failed_files += 1;
+                            let _ = self.event_tx.send(EngineEvent::FileFailed {
+                                item: item.clone(),
+                                error: item.error_message.clone().unwrap(),
+                            });
+                            self.items[idx] = item;
+                            continue;
+                        }
                     }
 
                     item.status = FileItemStatus::Completed;
@@ -482,7 +641,9 @@ impl TransferCoordinator {
                         .iter()
                         .map(|(p, h)| (p.as_path(), h.as_str()))
                         .collect();
-                    let _ = HashVerifier::export_checksum_manifest(&manifest_file, &refs);
+                    if let Err(e) = HashVerifier::export_checksum_manifest(&manifest_file, &refs) {
+                        error!("Failed to export checksum manifest to {:?}: {}", manifest_file, e);
+                    }
                 }
             }
         }
@@ -506,7 +667,7 @@ impl TransferCoordinator {
         copier: &FileCopier,
         stats: &mut TransferStats,
         speed_calc: &mut SpeedCalculator,
-    ) -> Result<u64> {
+    ) -> Result<(u64, std::path::PathBuf)> {
         let max_retries = self.config.retry_count;
         let timeout_duration = Duration::from_secs(self.config.retry_timeout_secs);
         let start_time = Instant::now();
@@ -618,7 +779,7 @@ impl TransferCoordinator {
                         transferred: bytes,
                         total: file_size,
                     });
-                    return Ok(bytes);
+                    return Ok((bytes, actual_src_path));
                 }
                 Err(TransferError::Canceled) => {
                     self.cleanup_cancelled_item(&item.dst_path);
@@ -649,11 +810,20 @@ impl TransferCoordinator {
         }
     }
 
-    /// Returns list of failed or skipped items for "Retry Failed Only" action.
+    /// Returns list of failed items for "Retry Failed Only" action.
     pub fn get_failed_items(&self) -> Vec<FileItem> {
         self.items
             .iter()
-            .filter(|i| i.status == FileItemStatus::Failed || i.status == FileItemStatus::Skipped)
+            .filter(|i| i.status == FileItemStatus::Failed)
+            .cloned()
+            .collect()
+    }
+
+    /// Returns list of skipped items.
+    pub fn get_skipped_items(&self) -> Vec<FileItem> {
+        self.items
+            .iter()
+            .filter(|i| i.status == FileItemStatus::Skipped)
             .cloned()
             .collect()
     }

@@ -82,7 +82,7 @@ export interface LaunchArgs {
   on_finish?: string;
 }
 
-export type TransferStatus = "idle" | "transferring" | "paused" | "completed" | "canceled" | "failed";
+export type TransferStatus = "idle" | "scanning" | "transferring" | "paused" | "completed" | "canceled" | "failed";
 
 export interface StartTransferResult {
   total_files: number;
@@ -96,5 +96,36 @@ export interface CurrentTransferState {
   files: FileItem[];
   launch_args: LaunchArgs;
   active_conflict?: ConflictInfo | null;
+}
+
+export interface SessionRecord {
+  id: number;
+  session_uuid: string;
+  start_time: string;
+  end_time?: string | null;
+  mode: string;
+  source_summary: string;
+  destination: string;
+  total_files: number;
+  completed_files: number;
+  skipped_files: number;
+  failed_files: number;
+  total_bytes: number;
+  transferred_bytes: number;
+  average_speed_bps: number;
+  status: string;
+}
+
+export interface HistoryFileRecord {
+  id: number;
+  session_id: number;
+  src_path: string;
+  dst_path: string;
+  size: number;
+  status: string;
+  src_hash?: string | null;
+  dst_hash?: string | null;
+  error_message?: string | null;
+  retry_count: number;
 }
 

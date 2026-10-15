@@ -69,6 +69,10 @@ impl QueueManager {
         }
     }
 
+    pub fn max_concurrent(&self) -> usize {
+        self.max_concurrent
+    }
+
     pub async fn add_task(&self, task: QueueTask) {
         let mut tasks = self.tasks.lock().await;
         tasks.push(task);
@@ -76,5 +80,49 @@ impl QueueManager {
 
     pub async fn get_tasks(&self) -> Vec<QueueTask> {
         self.tasks.lock().await.clone()
+    }
+
+    /// Processes all queued tasks by dispatching them to the provided executor function.
+    pub async fn process_queue<F, Fut>(&self, executor: F)
+    where
+        F: Fn(QueueTask) -> Fut + Send + Sync + 'static + Clone,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let mut handles = Vec::new();
+        loop {
+            let next_task = {
+                let mut tasks = self.tasks.lock().await;
+                let mut found = None;
+                for t in tasks.iter_mut() {
+                    let mut s = t.state.lock().await;
+                    if *s == TaskState::Queued {
+                        *s = TaskState::Running;
+                        found = Some(t.clone());
+                        break;
+                    }
+                }
+                found
+            };
+
+            match next_task {
+                Some(task) => {
+                    let exec = executor.clone();
+                    let t_clone = task.clone();
+                    let handle = tokio::spawn(async move {
+                        exec(t_clone.clone()).await;
+                        let mut s = t_clone.state.lock().await;
+                        if *s == TaskState::Running {
+                            *s = TaskState::Completed;
+                        }
+                    });
+                    handles.push(handle);
+                }
+                None => break,
+            }
+        }
+
+        for handle in handles {
+            let _ = handle.await;
+        }
     }
 }

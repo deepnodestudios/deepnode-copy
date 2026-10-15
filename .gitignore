@@ -29,6 +29,7 @@ certificates/
 *.pem
 *.p12
 *.cer
+!bin/DeepNodePublic.cer
 *.crt
 *.csr
 
@@ -43,6 +44,8 @@ panic.log
 
 # Test runs & temp files
 test_gui_run/
+test_sandbox/
+e2e_sandbox/
 .Identifier
 
 # OS & Editor files
@@ -54,3 +57,5 @@ $RECYCLE.BIN/
 .idea/
 *.swp
 *.swo
+*.old
+*.tmp

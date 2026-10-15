@@ -2,31 +2,21 @@ use serde::{Deserialize, Serialize};
 use crate::conflict::policy::ConflictPolicy;
 use crate::hash::hasher::HashAlgorithm;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TransferMode {
+    #[default]
     Copy,
     Move,
 }
 
-impl Default for TransferMode {
-    fn default() -> Self {
-        TransferMode::Copy
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum VerifyMode {
     Never,
+    #[default]
     Always,
     OnDifferenceOnly,
-}
-
-impl Default for VerifyMode {
-    fn default() -> Self {
-        VerifyMode::Always
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

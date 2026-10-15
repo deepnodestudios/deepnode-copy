@@ -3,6 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use crate::error::{Result, TransferError};
 use crate::hash::hasher::{HashAlgorithm, MultiHasher};
+use crate::io::buffer::AlignedBuffer;
 use crate::io::win32_file::Win32FileHandle;
 
 pub struct HashVerifier;
@@ -11,15 +12,22 @@ impl HashVerifier {
     /// Computes hash of a file using unbuffered direct I/O where possible to bypass OS file cache.
     pub fn compute_file_hash(path: &Path, algo: HashAlgorithm, bypass_cache: bool) -> Result<String> {
         let file = Win32FileHandle::open_read(path, bypass_cache, false)?;
+        let file_size = file.get_size()?;
         let mut hasher = MultiHasher::new(algo);
-        let mut buffer = vec![0u8; 1024 * 1024]; // 1MB buffer
+        let mut buffer = AlignedBuffer::new(1024 * 1024, 4096);
+        let mut remaining = file_size;
 
         loop {
-            let read_bytes = file.read_sync(&mut buffer)?;
+            if remaining == 0 {
+                break;
+            }
+            let read_bytes = file.read_sync(buffer.as_mut_slice())?;
             if read_bytes == 0 {
                 break;
             }
-            hasher.update(&buffer[..read_bytes]);
+            let valid_bytes = std::cmp::min(read_bytes as u64, remaining) as usize;
+            hasher.update(&buffer.as_mut_slice()[..valid_bytes]);
+            remaining = remaining.saturating_sub(valid_bytes as u64);
         }
 
         Ok(hasher.finalize_hex())
@@ -85,14 +93,15 @@ impl HashVerifier {
     }
 
     /// Writes checksum to NTFS Alternate Data Stream (ADS): `<filename>:DeepNodeHash`
-    pub fn write_hash_to_ads(path: &Path, algo: HashAlgorithm, hash_val: &str) -> std::io::Result<()> {
+    pub fn write_hash_to_ads(path: &Path, _algo: HashAlgorithm, hash_val: &str) -> std::io::Result<()> {
         let ads_path_str = format!("{}:DeepNodeHash", path.to_string_lossy());
         let mut f = File::create(Path::new(&ads_path_str))?;
-        writeln!(f, "{:?}:{}", algo, hash_val)?;
+        writeln!(f, "{}", hash_val.trim())?;
         Ok(())
     }
 
-    /// Reads checksum from NTFS Alternate Data Stream (ADS): `<filename>:DeepNodeHash`
+    /// Reads checksum from NTFS Alternate Data Stream (ADS): `<filename>:DeepNodeHash`.
+    /// Handles both raw checksums and legacy `Algorithm:hash` formats, returning the clean hash string.
     pub fn read_hash_from_ads(path: &Path) -> std::io::Result<Option<String>> {
         let ads_path_str = format!("{}:DeepNodeHash", path.to_string_lossy());
         let p = Path::new(&ads_path_str);
@@ -103,18 +112,34 @@ impl HashVerifier {
         let mut reader = BufReader::new(f);
         let mut line = String::new();
         reader.read_line(&mut line)?;
-        Ok(Some(line.trim().to_string()))
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        if let Some((_, hash_part)) = trimmed.split_once(':') {
+            Ok(Some(hash_part.trim().to_string()))
+        } else {
+            Ok(Some(trimmed.to_string()))
+        }
     }
 
     /// Exports a `.hash`, `.md5`, or `.sha256` checksum manifest file.
+    /// Preserves relative paths for subdirectories to prevent file name collisions.
     pub fn export_checksum_manifest(
         output_file: &Path,
         records: &[(&Path, &str)],
     ) -> std::io::Result<()> {
+        let base_dir = output_file.parent().unwrap_or(Path::new("."));
         let mut f = File::create(output_file)?;
         for (file_path, hash) in records {
-            let filename = file_path.file_name().unwrap_or_default().to_string_lossy();
-            writeln!(f, "{} *{}", hash, filename)?;
+            let rel_str = if let Ok(rel) = file_path.strip_prefix(base_dir) {
+                rel.to_string_lossy().replace('\\', "/")
+            } else if let Some(fname) = file_path.file_name() {
+                fname.to_string_lossy().to_string()
+            } else {
+                file_path.to_string_lossy().replace('\\', "/")
+            };
+            writeln!(f, "{} *{}", hash, rel_str)?;
         }
         Ok(())
     }

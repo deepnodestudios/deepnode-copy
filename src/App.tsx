@@ -30,6 +30,7 @@ export const App: React.FC = () => {
   const [aboutModalOpen, setAboutModalOpen] = useState(false);
   const [copyPasteModalOpen, setCopyPasteModalOpen] = useState(false);
   const [activeConflict, setActiveConflict] = useState<ConflictInfo | null>(null);
+  const [isContextMenuRegistered, setIsContextMenuRegistered] = useState<boolean>(false);
   const [lang, setLangState] = useState<Language>(() => {
     try {
       const saved = localStorage.getItem("deepnode_copy_lang");
@@ -51,9 +52,32 @@ export const App: React.FC = () => {
     }
   };
 
-  const t = translations[lang] || translations.tr;
+  const langRef = React.useRef(lang);
+  useEffect(() => {
+    langRef.current = lang;
+  }, [lang]);
+
+  const getTranslation = () => translations[langRef.current] || translations.tr;
+
+  const resolveDestinationFolder = async (pathStr: string): Promise<string> => {
+    if (!pathStr || !pathStr.trim()) return "";
+    try {
+      const resolved = await invoke<string>("resolve_destination_path", { path: pathStr });
+      return resolved || pathStr;
+    } catch {
+      const clean = pathStr.trim().replace(/\//g, "\\");
+      const lastSlash = clean.lastIndexOf("\\");
+      if (lastSlash > 0 && clean.slice(lastSlash + 1).includes(".")) {
+        return clean.slice(0, lastSlash);
+      }
+      return clean;
+    }
+  };
+
   const isCanceledRef = React.useRef(false);
   const lastStatsUpdateRef = React.useRef<number>(0);
+  const isStartingTransferRef = React.useRef(false);
+  const previewRequestIdRef = React.useRef(0);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
 
   // Transfer settings
@@ -87,10 +111,21 @@ export const App: React.FC = () => {
   const [files, setFiles] = useState<FileItem[]>([]);
   const [speedHistory, setSpeedHistory] = useState<number[]>([]);
 
-  const isTransferring = transferStatus === "transferring" || transferStatus === "paused";
+  const isTransferring =
+    transferStatus === "transferring" || transferStatus === "scanning" || transferStatus === "paused";
   const isPaused = transferStatus === "paused";
 
+  useEffect(() => {
+    document.documentElement.dir = lang === "ar" ? "rtl" : "ltr";
+    document.documentElement.lang = lang;
+  }, [lang]);
+
   const updatePreview = async (sources: string[]) => {
+    const reqId = ++previewRequestIdRef.current;
+
+    if (isTransferring) {
+      return;
+    }
     if (sources.length === 0) {
       setStagedPreview(null);
       setFiles([]);
@@ -105,21 +140,26 @@ export const App: React.FC = () => {
     }
     try {
       const res = await invoke<ScanPreviewResult>("scan_items_preview", { sources });
-      setStagedPreview(res);
-      if (res && res.items) {
-        setFiles(res.items);
-        setStats((prev) => ({
-          ...prev,
-          total_files: res.total_files,
-          total_bytes: res.total_bytes,
-        }));
+      if (reqId === previewRequestIdRef.current) {
+        setStagedPreview(res);
+        if (res && res.items) {
+          setFiles(res.items);
+          setStats((prev) => ({
+            ...prev,
+            total_files: res.total_files,
+            total_bytes: res.total_bytes,
+          }));
+        }
       }
     } catch (e) {
-      console.error("Preview scan error:", e);
+      if (reqId === previewRequestIdRef.current) {
+        console.error("Preview scan error:", e);
+      }
     }
   };
 
   useEffect(() => {
+    let isMounted = true;
     let unlistenFn: (() => void) | null = null;
     let unlistenDragDrop: (() => void) | null = null;
 
@@ -127,7 +167,8 @@ export const App: React.FC = () => {
       // 0. Listen for native OS drag & drop events from Windows Explorer
       try {
         const appWin = getCurrentWindow();
-        unlistenDragDrop = await appWin.onDragDropEvent((event) => {
+        const unlisten = await appWin.onDragDropEvent((event) => {
+          if (!isMounted) return;
           if (event.payload.type === "enter" || event.payload.type === "over") {
             setIsDraggingOver(true);
           } else if (event.payload.type === "leave") {
@@ -145,7 +186,11 @@ export const App: React.FC = () => {
                 const elem = document.elementFromPoint(x, y);
                 if (elem && elem.closest('[data-drop-target="destination"]')) {
                   droppedOnDestination = true;
-                  setDestination(dropped[0]);
+                  resolveDestinationFolder(dropped[0]).then((dest) => {
+                    if (isMounted) {
+                      setDestination(dest);
+                    }
+                  });
                 }
               }
 
@@ -167,13 +212,19 @@ export const App: React.FC = () => {
             }
           }
         });
+        if (!isMounted) {
+          unlisten();
+        } else {
+          unlistenDragDrop = unlisten;
+        }
       } catch (dragErr) {
         console.error("Error setting onDragDropEvent:", dragErr);
       }
 
       // 1. Listen for real-time engine events from Tauri Rust backend
       try {
-        unlistenFn = await listen<EngineEvent>("engine_event", (event) => {
+        const unlisten = await listen<EngineEvent>("engine_event", (event) => {
+          if (!isMounted) return;
           const data = event.payload;
 
           switch (data.type) {
@@ -305,7 +356,7 @@ export const App: React.FC = () => {
             case "TransferFailed":
               setTransferStatus("failed");
               Sentry.captureMessage(`DeepNode Transfer Failed: ${data.payload}`, "error");
-              alert(`${t.statusFailed}: ${data.payload}`);
+              alert(`${getTranslation().statusFailed}: ${data.payload}`);
               break;
 
             case "ConflictDetected":
@@ -316,6 +367,11 @@ export const App: React.FC = () => {
               break;
           }
         });
+        if (!isMounted) {
+          unlisten();
+        } else {
+          unlistenFn = unlisten;
+        }
       } catch (err) {
         console.error("Error setting up event listener:", err);
       }
@@ -326,6 +382,7 @@ export const App: React.FC = () => {
         if (
           curState &&
           (curState.status === "transferring" ||
+            curState.status === "scanning" ||
             curState.status === "paused" ||
             curState.status === "completed" ||
             curState.status === "canceled")
@@ -364,6 +421,8 @@ export const App: React.FC = () => {
           if (args.is_popup) {
             setCopyPasteModalOpen(true);
           } else if (args.auto_start && args.destination) {
+            if (isStartingTransferRef.current) return;
+            isStartingTransferRef.current = true;
             // Automatically launch transfer
             setIsCompact(true);
             invoke("toggle_compact_mode", { compact: true }).catch(() => {});
@@ -407,9 +466,15 @@ export const App: React.FC = () => {
             } catch (err) {
               setTransferStatus("failed");
               console.error("Auto transfer error:", err);
+            } finally {
+              isStartingTransferRef.current = false;
             }
           }
         }
+        // Check if context menu is registered
+        invoke<boolean>("is_shell_context_menu_registered")
+          .then((registered) => setIsContextMenuRegistered(registered))
+          .catch(() => {});
       } catch (err) {
         console.error("Error reading launch args:", err);
       }
@@ -435,9 +500,11 @@ export const App: React.FC = () => {
     try {
       const picked = await invoke<string[]>("pick_source_files");
       if (picked && picked.length > 0) {
-        const updated = Array.from(new Set([...stagedSources, ...picked]));
-        setStagedSources(updated);
-        updatePreview(updated);
+        setStagedSources((prev) => {
+          const updated = Array.from(new Set([...prev, ...picked]));
+          updatePreview(updated);
+          return updated;
+        });
       }
     } catch (e) {
       console.error("pick_source_files error:", e);
@@ -448,9 +515,11 @@ export const App: React.FC = () => {
     try {
       const folder = await invoke<string | null>("pick_source_folder");
       if (folder) {
-        const updated = Array.from(new Set([...stagedSources, folder]));
-        setStagedSources(updated);
-        updatePreview(updated);
+        setStagedSources((prev) => {
+          const updated = Array.from(new Set([...prev, folder]));
+          updatePreview(updated);
+          return updated;
+        });
       }
     } catch (e) {
       console.error("pick_source_folder error:", e);
@@ -468,10 +537,19 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleRemoveStaged = (index: number) => {
-    const updated = stagedSources.filter((_, idx) => idx !== index);
-    setStagedSources(updated);
-    updatePreview(updated);
+  const handleRemoveStaged = (indices: number[] | number) => {
+    const toRemove = new Set(Array.isArray(indices) ? indices : [indices]);
+    if (toRemove.size === 0) return;
+
+    setStagedSources((prev) => {
+      const updated = prev.filter((_, idx) => !toRemove.has(idx));
+      if (updated.length === 0) {
+        handleClearStaged();
+      } else {
+        updatePreview(updated);
+      }
+      return updated;
+    });
   };
 
   const handleClearStaged = () => {
@@ -481,8 +559,12 @@ export const App: React.FC = () => {
   };
 
   const handleStartTransfer = async (mode: "copy" | "move", overridePolicy?: string) => {
+    if (isStartingTransferRef.current) return;
+    if (transferStatus === "transferring" || transferStatus === "scanning" || transferStatus === "paused") {
+      return;
+    }
     if (stagedSources.length === 0 && files.length === 0) {
-      alert(t.noFilesFound);
+      alert(getTranslation().noFilesFound);
       return;
     }
 
@@ -492,8 +574,15 @@ export const App: React.FC = () => {
       if (!picked) return;
       target = picked;
       setDestination(picked);
+    } else {
+      target = await resolveDestinationFolder(target);
+      if (target !== destination) {
+        setDestination(target);
+      }
     }
 
+    if (isStartingTransferRef.current) return;
+    isStartingTransferRef.current = true;
     setTransferStatus("transferring");
     setSpeedHistory([]);
 
@@ -532,7 +621,9 @@ export const App: React.FC = () => {
       }
     } catch (e) {
       setTransferStatus("failed");
-      alert(`${t.statusFailed}: ${e}`);
+      alert(`${getTranslation().statusFailed}: ${e}`);
+    } finally {
+      isStartingTransferRef.current = false;
     }
   };
 
@@ -560,7 +651,8 @@ export const App: React.FC = () => {
         setTransferStatus("paused");
       }
     } catch (e) {
-      console.error(e);
+      console.error("Pause/resume error:", e);
+      alert(`${getTranslation().pause}: ${e}`);
     }
   };
 
@@ -575,7 +667,7 @@ export const App: React.FC = () => {
     try {
       await invoke("cancel_transfer");
     } catch (e) {
-      console.error(e);
+      console.error("cancel_transfer error:", e);
     }
     // As explicitly requested by user: clicking cancel aborts and closes the window
     await handleCloseApp();
@@ -586,6 +678,7 @@ export const App: React.FC = () => {
       await invoke("skip_current_file");
     } catch (e) {
       console.error("skip_current_file error:", e);
+      alert(`${getTranslation().skipFile}: ${e}`);
     }
   };
 
@@ -597,6 +690,7 @@ export const App: React.FC = () => {
       );
     } catch (e) {
       console.error("skip_files_by_id error:", e);
+      alert(`${getTranslation().skipFile}: ${e}`);
     }
   };
 
@@ -616,6 +710,7 @@ export const App: React.FC = () => {
       setFiles((prev) => prev.filter((f) => !ids.includes(f.id) || f.status === "completed"));
     } catch (e) {
       console.error("remove_queued_files error:", e);
+      alert(`${getTranslation().statusFailed}: ${e}`);
     }
   };
 
@@ -660,11 +755,20 @@ export const App: React.FC = () => {
   };
 
   const handleRetryFailed = async () => {
+    if (isStartingTransferRef.current) return;
+    if (transferStatus === "transferring" || transferStatus === "scanning" || transferStatus === "paused") {
+      return;
+    }
+    isStartingTransferRef.current = true;
     try {
       await invoke("retry_failed_transfer");
       setTransferStatus("transferring");
     } catch (e) {
-      console.error(e);
+      console.error("retry_failed_transfer error:", e);
+      const curT = getTranslation();
+      alert(`${curT.retryFailed || curT.retryDownload}: ${e}`);
+    } finally {
+      isStartingTransferRef.current = false;
     }
   };
 
@@ -689,7 +793,18 @@ export const App: React.FC = () => {
 
   const handleRegisterContextMenu = async () => {
     try {
-      const res = await invoke<string>("register_shell_context_menu");
+      const res = await invoke<string>("register_shell_context_menu", { lang });
+      setIsContextMenuRegistered(true);
+      alert(res);
+    } catch (e) {
+      alert("Hata: " + e);
+    }
+  };
+
+  const handleUnregisterContextMenu = async () => {
+    try {
+      const res = await invoke<string>("unregister_shell_context_menu", { lang });
+      setIsContextMenuRegistered(false);
       alert(res);
     } catch (e) {
       alert("Hata: " + e);
@@ -722,6 +837,23 @@ export const App: React.FC = () => {
       } catch (err) {
         console.error("win.minimize error:", err);
       }
+    }
+  };
+
+  const handleRerunSession = (sources: string[], dest: string) => {
+    if (isTransferring) {
+      alert(lang === "tr" ? "Aktif bir aktarım devam ederken yeni bir aktarım yüklenemez." : "Cannot load transfer while another transfer is active.");
+      return;
+    }
+    if (sources.length > 0) {
+      setStagedSources(sources);
+      updatePreview(sources);
+    }
+    if (dest) {
+      setDestination(dest);
+    }
+    if (transferStatus === "completed" || transferStatus === "canceled") {
+      setTransferStatus("idle");
     }
   };
 
@@ -786,6 +918,8 @@ export const App: React.FC = () => {
           onOpenVerify={() => setVerifyModalOpen(true)}
           onOpenAbout={() => setAboutModalOpen(true)}
           onRegisterContextMenu={handleRegisterContextMenu}
+          onUnregisterContextMenu={handleUnregisterContextMenu}
+          isContextMenuRegistered={isContextMenuRegistered}
           onFinishAction={onFinishAction}
           onChangeOnFinish={setOnFinishAction}
           conflictPolicy={conflictPolicy}
@@ -809,6 +943,7 @@ export const App: React.FC = () => {
           lang={lang}
           onLangChange={setLang}
           isDraggingOver={isDraggingOver}
+          onRerunSession={handleRerunSession}
         />
       )}
 
@@ -839,7 +974,7 @@ export const App: React.FC = () => {
       <CopyPasteModal
         isOpen={copyPasteModalOpen}
         source={stagedSources[0] || ""}
-        destination={destination || "C:\\Users\\mehme\\Desktop"}
+        destination={destination || ""}
         onClose={() => setCopyPasteModalOpen(false)}
         onSelectExplorer={() => {
           setCopyPasteModalOpen(false);

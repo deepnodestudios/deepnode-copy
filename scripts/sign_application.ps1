@@ -1,11 +1,28 @@
 # DeepNode Copy - Code Signing & Trusted Root Certificate Installer
 param (
     [string]$Subject = "CN=DeepNode Software, O=DeepNode Team, C=TR",
-    [string]$Password = "DeepNodeSigning2026!"
+    [string]$Password = $(if ($env:DEEPNODE_SIGNING_PASSWORD) { $env:DEEPNODE_SIGNING_PASSWORD } else { "DeepNodeSigning2026!" })
 )
 
 $ErrorActionPreference = "Stop"
-$signtool = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe"
+
+function Find-SignTool {
+    $cmd = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+
+    $sdkPaths = @(
+        "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe",
+        "C:\Program Files\Windows Kits\10\bin\*\x64\signtool.exe"
+    )
+    foreach ($p in $sdkPaths) {
+        $found = Get-Item $p -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+        if ($found -and (Test-Path $found.FullName)) {
+            return $found.FullName
+        }
+    }
+    throw "signtool.exe bulunamadı! Lütfen Windows 10/11 SDK'nın kurulu olduğundan emin olun."
+}
+$signtool = Find-SignTool
 
 Write-Host "======================================================================" -ForegroundColor Cyan
 Write-Host "         DEEPNODE COPY: KOD IMZALAMA & GUVENLIK SERTIFIKASI           " -ForegroundColor Cyan
@@ -29,8 +46,8 @@ if (-not $cert) {
     Write-Host ">>> Mevcut sertifika bulundu: $($cert.Thumbprint)" -ForegroundColor Green
 }
 
-# 2. Sertifikayı Güvenilen Yayımcılar (TrustedPublisher) Deposuna Ekle
-Write-Host ">>> Sertifika 'Güvenilen Yayımcılar' (TrustedPublisher) deposuna ekleniyor..." -ForegroundColor Yellow
+# 2. Sertifikayı Güvenilen Yayımcılar (TrustedPublisher) ve Güvenilen Kişiler (TrustedPeople) Deposuna Ekle
+Write-Host ">>> Sertifika 'Güvenilen Yayımcılar' ve 'Güvenilen Kişiler' deposuna ekleniyor..." -ForegroundColor Yellow
 $pubStore = New-Object System.Security.Cryptography.X509Certificates.X509Store(
     [System.Security.Cryptography.X509Certificates.StoreName]::TrustedPublisher,
     [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
@@ -38,7 +55,15 @@ $pubStore = New-Object System.Security.Cryptography.X509Certificates.X509Store(
 $pubStore.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
 $pubStore.Add($cert)
 $pubStore.Close()
-Write-Host ">>> Güvenilen Yayımcılar deposuna başarıyla eklendi!" -ForegroundColor Green
+
+$peopleStore = New-Object System.Security.Cryptography.X509Certificates.X509Store(
+    [System.Security.Cryptography.X509Certificates.StoreName]::TrustedPeople,
+    [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
+)
+$peopleStore.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+$peopleStore.Add($cert)
+$peopleStore.Close()
+Write-Host ">>> Güvenlik depolarına başarıyla eklendi!" -ForegroundColor Green
 
 # 3. PFX Dosyasını Dışa Aktar
 $certDir = Join-Path $PSScriptRoot "..\certificates"
@@ -50,15 +75,21 @@ Export-PfxCertificate -Cert $cert -FilePath $pfxPath -Password $securePass | Out
 Write-Host ">>> PFX Sertifika dosyası kaydedildi: $pfxPath" -ForegroundColor Gray
 
 # 4. İmzalanacak Dosyaların Listesi
+$projectRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $filesToSign = @(
-    "E:\Projeler\DeepNode Copy\target\release\deepnode-cli.exe",
-    "E:\Projeler\DeepNode Copy\target\release\deepnode_shell.dll",
-    "E:\Projeler\DeepNode Copy\target\release\deepnode-gui.exe",
-    "E:\Projeler\DeepNode Copy\package_output\DeepNodeCopy.msix"
+    (Join-Path $projectRoot "target\release\deepnode-cli.exe"),
+    (Join-Path $projectRoot "target\release\deepnode_shell.dll"),
+    (Join-Path $projectRoot "target\release\deepnode-gui.exe"),
+    (Join-Path $projectRoot "bin\deepnode-cli.exe"),
+    (Join-Path $projectRoot "bin\deepnode_shell.dll"),
+    (Join-Path $projectRoot "bin\DeepNodeCopy.exe"),
+    (Join-Path $projectRoot "package_output\DeepNodeCopy.msix"),
+    (Join-Path $projectRoot "bin\DeepNodeCopy.msix")
 )
 
 Write-Host "`n>>> Dosyalar imzalanıyor..." -ForegroundColor Cyan
 
+$signedCount = 0
 foreach ($file in $filesToSign) {
     if (Test-Path $file) {
         Write-Host "  -> İmzalanıyor: $(Split-Path $file -Leaf)..." -ForegroundColor Yellow
@@ -69,15 +100,26 @@ foreach ($file in $filesToSign) {
         if ($proc.ExitCode -ne 0) {
             # Timestamp sunucusu timeout verirse timestampsiz dene
             $signArgsNoTs = @("sign", "/fd", "SHA256", "/f", $pfxPath, "/p", $Password, $file)
-            & $signtool $signArgsNoTs
+            $procNoTs = Start-Process -FilePath $signtool -ArgumentList $signArgsNoTs -Wait -PassThru -NoNewWindow
+            if ($procNoTs.ExitCode -ne 0) {
+                throw "Signtool signing failed for $file with exit code $($procNoTs.ExitCode)"
+            }
         }
 
         # İmzayı doğrula
         $sig = Get-AuthenticodeSignature $file
+        if ($sig.Status -ne "Valid") {
+            throw "Signature verification failed for $file. Status: $($sig.StatusMessage) ($($sig.Status))"
+        }
         Write-Host "     Durum: $($sig.Status) | İmzacı: $($sig.SignerCertificate.Subject)" -ForegroundColor Green
+        $signedCount++
     }
 }
 
+if ($signedCount -eq 0) {
+    throw "Hiçbir imzalanacak dosya bulunamadı! Lütfen önce derlemeyi tamamlayın."
+}
+
 Write-Host "`n======================================================================" -ForegroundColor Cyan
-Write-Host "   TÜM UYGULAMA BİLEŞENLERİ BAŞARIYLA İMZALANDI VE GÜVENİLDİ!         " -ForegroundColor Green
+Write-Host "   TOPLAM $signedCount ADET BİLEŞEN BAŞARIYLA İMZALANDI VE DOĞRULANDI! " -ForegroundColor Green
 Write-Host "======================================================================" -ForegroundColor Cyan

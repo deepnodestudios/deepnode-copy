@@ -763,7 +763,7 @@ dependencies = [
 
 [[package]]
 name = "deepnode-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -778,7 +778,7 @@ dependencies = [
 
 [[package]]
 name = "deepnode-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "blake3",
@@ -795,6 +795,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "uuid",
  "walkdir",
  "windows 0.58.0",
  "xxhash-rust",
@@ -802,7 +803,7 @@ dependencies = [
 
 [[package]]
 name = "deepnode-db"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "deepnode-core",
@@ -816,7 +817,7 @@ dependencies = [
 
 [[package]]
 name = "deepnode-gui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "deepnode-core",
@@ -838,11 +839,12 @@ dependencies = [
 
 [[package]]
 name = "deepnode-shell"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "deepnode-core",
  "thiserror 2.0.21",
  "tracing",
+ "uuid",
  "windows 0.58.0",
  "windows-core 0.58.0",
 ]

@@ -33,11 +33,15 @@ impl SecurityAcl {
                 &mut sec_desc,
             );
 
-            if get_res.is_err() {
-                return Ok(()); // Non-critical or permission denied, continue
+            if get_res.0 != 0 {
+                tracing::warn!("GetNamedSecurityInfoW failed for {:?}: code {}", src, get_res.0);
+                return Err(crate::error::TransferError::Win32 {
+                    code: get_res.0,
+                    message: format!("Failed to read security DACL for {:?}: code {}", src, get_res.0),
+                });
             }
 
-            let _ = SetNamedSecurityInfoW(
+            let set_res = SetNamedSecurityInfoW(
                 PCWSTR(dst_wide.as_ptr()),
                 SE_FILE_OBJECT,
                 DACL_SECURITY_INFORMATION,
@@ -49,6 +53,14 @@ impl SecurityAcl {
 
             if !sec_desc.0.is_null() {
                 let _ = windows::Win32::Foundation::LocalFree(HLOCAL(sec_desc.0));
+            }
+
+            if set_res.0 != 0 {
+                tracing::warn!("SetNamedSecurityInfoW failed for {:?}: code {}", dst, set_res.0);
+                return Err(crate::error::TransferError::Win32 {
+                    code: set_res.0,
+                    message: format!("Failed to set security DACL for {:?}: code {}", dst, set_res.0),
+                });
             }
         }
 

@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 use crate::engine::item::FileItem;
 use crate::error::Result;
-use crate::util::{clean_path_str, read_file_list, sanitize_path};
+use crate::util::{
+    clean_path_str, is_deepnode_temp_list, resolve_star_path, sanitize_path, StarPathResolution,
+};
 
 pub struct FileScanner;
 
@@ -19,20 +21,43 @@ impl FileScanner {
                 continue;
             }
 
-            // Check if this is a file list pointer (*list.txt from file managers)
+            // Check if this is a file list pointer or an XYplorer *"<curitem>" source
             if let Some(stripped) = clean_src.strip_prefix('*') {
                 let list_path = sanitize_path(stripped);
-                if list_path.exists() {
-                    let files_in_list = read_file_list(&list_path);
-                    for item_path in files_in_list {
-                        let path = sanitize_path(&item_path);
-                        Self::collect_path(&path, &clean_dest, &mut items, &mut id_counter)?;
+                match resolve_star_path(&list_path) {
+                    StarPathResolution::FileList(files_in_list) => {
+                        for item_path in files_in_list {
+                            let path = sanitize_path(&item_path);
+                            if !path.exists() {
+                                return Err(crate::error::TransferError::Io(format!(
+                                    "Source file in list not found: {:?}", path
+                                )));
+                            }
+                            Self::collect_path(&path, &clean_dest, &mut items, &mut id_counter)?;
+                        }
+                        if is_deepnode_temp_list(&list_path) {
+                            let _ = std::fs::remove_file(&list_path);
+                        }
+                        continue;
                     }
-                    continue;
+                    StarPathResolution::SingleSource(path) => {
+                        Self::collect_path(&path, &clean_dest, &mut items, &mut id_counter)?;
+                        continue;
+                    }
+                    StarPathResolution::NotFound(path) => {
+                        return Err(crate::error::TransferError::Io(format!(
+                            "Source path or file list not found: {:?}", path
+                        )));
+                    }
                 }
             }
 
             let path = sanitize_path(&clean_src);
+            if !path.exists() {
+                return Err(crate::error::TransferError::Io(format!(
+                    "Source path does not exist: {:?}", path
+                )));
+            }
             Self::collect_path(&path, &clean_dest, &mut items, &mut id_counter)?;
         }
 
@@ -47,7 +72,9 @@ impl FileScanner {
     ) -> Result<()> {
         let clean_src = sanitize_path(src);
         if !clean_src.exists() {
-            return Ok(());
+            return Err(crate::error::TransferError::Io(format!(
+                "Source path does not exist: {:?}", clean_src
+            )));
         }
 
         if clean_src.is_file() {
@@ -65,25 +92,41 @@ impl FileScanner {
             *id_counter += 1;
         } else if clean_src.is_dir() {
             let dir_name = clean_src.file_name().unwrap_or_default();
-            let base_dst = destination.join(dir_name);
+            let mut found_any_file = false;
 
             for entry in walkdir::WalkDir::new(&clean_src).into_iter().flatten() {
                 let entry_path = entry.path();
                 if entry_path.is_file() {
+                    found_any_file = true;
                     if let Ok(rel) = entry_path.strip_prefix(&clean_src) {
-                        let dst_file = base_dst.join(rel);
+                        let rel_with_dir = std::path::Path::new(dir_name).join(rel);
+                        let dst_file = destination.join(&rel_with_dir);
                         let size = entry_path.metadata().map(|m| m.len()).unwrap_or(0);
 
                         items.push(FileItem::new(
                             *id_counter,
                             entry_path.to_path_buf(),
                             dst_file,
-                            rel.to_path_buf(),
+                            rel_with_dir,
                             size,
                         ));
                         *id_counter += 1;
                     }
+                } else if entry_path.is_dir() && entry_path != clean_src {
+                    let is_empty = std::fs::read_dir(entry_path).map(|mut d| d.next().is_none()).unwrap_or(false);
+                    if is_empty {
+                        if let Ok(rel) = entry_path.strip_prefix(&clean_src) {
+                            let rel_with_dir = std::path::Path::new(dir_name).join(rel);
+                            let dst_dir = destination.join(&rel_with_dir);
+                            let _ = std::fs::create_dir_all(&dst_dir);
+                        }
+                    }
                 }
+            }
+
+            if !found_any_file {
+                let dst_dir = destination.join(dir_name);
+                let _ = std::fs::create_dir_all(&dst_dir);
             }
         }
 
