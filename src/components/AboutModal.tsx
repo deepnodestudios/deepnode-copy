@@ -95,15 +95,19 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose, lang })
 
       const isPortable = await invoke<boolean>("is_portable_app").catch(() => true);
 
-      const response = await fetch("https://api.github.com/repos/deepnodestudios/deepnode-copy/releases/latest", {
-        headers: { Accept: "application/vnd.github.v3+json" },
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+      let release: any;
+      try {
+        release = await invoke("check_latest_release");
+      } catch {
+        const response = await fetch("https://api.github.com/repos/deepnodestudios/deepnode-copy/releases/latest", {
+          headers: { Accept: "application/vnd.github.v3+json" },
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        release = await response.json();
       }
 
-      const release = await response.json();
       const latestTag = release.tag_name || "";
       const isNewer = compareVersions(latestTag, liveVer || currentVersion) > 0;
 

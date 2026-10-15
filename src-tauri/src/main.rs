@@ -1809,6 +1809,73 @@ fn verify_installer_authenticode(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct ReleaseAssetInfo {
+    pub name: String,
+    pub browser_download_url: String,
+    pub size: u64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct LatestReleaseInfo {
+    pub tag_name: String,
+    pub name: String,
+    pub body: Option<String>,
+    pub html_url: String,
+    pub assets: Vec<ReleaseAssetInfo>,
+}
+
+#[tauri::command]
+async fn check_latest_release() -> Result<LatestReleaseInfo, String> {
+    let client = reqwest::Client::builder()
+        .user_agent(format!("DeepNodeCopy/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| format!("HTTP client oluşturulamadı: {}", e))?;
+
+    let url = "https://api.github.com/repos/deepnodestudios/deepnode-copy/releases/latest";
+    let res = client
+        .get(url)
+        .header("Accept", "application/vnd.github.v3+json")
+        .send()
+        .await
+        .map_err(|e| format!("GitHub API bağlantı hatası: {}", e))?;
+
+    if !res.status().is_success() {
+        return Err(format!("GitHub API yanıt vermedi: HTTP {}", res.status()));
+    }
+
+    let val: serde_json::Value = res.json().await.map_err(|e| format!("JSON ayrıştırma hatası: {}", e))?;
+
+    let tag_name = val["tag_name"].as_str().unwrap_or("").to_string();
+    let name = val["name"].as_str().unwrap_or(&tag_name).to_string();
+    let body = val["body"].as_str().map(|s| s.to_string());
+    let html_url = val["html_url"].as_str().unwrap_or("").to_string();
+
+    let mut assets = Vec::new();
+    if let Some(arr) = val["assets"].as_array() {
+        for a in arr {
+            let aname = a["name"].as_str().unwrap_or("").to_string();
+            let durl = a["browser_download_url"].as_str().unwrap_or("").to_string();
+            let size = a["size"].as_u64().unwrap_or(0);
+            if !aname.is_empty() && !durl.is_empty() {
+                assets.push(ReleaseAssetInfo {
+                    name: aname,
+                    browser_download_url: durl,
+                    size,
+                });
+            }
+        }
+    }
+
+    Ok(LatestReleaseInfo {
+        tag_name,
+        name,
+        body,
+        html_url,
+        assets,
+    })
+}
+
 #[tauri::command]
 async fn start_update_download(app: AppHandle, url: String) -> Result<(), String> {
     let parsed_url = validate_update_url(&url)?;
@@ -2611,6 +2678,7 @@ fn main() {
                 unregister_shell_context_menu,
                 is_shell_context_menu_registered,
                 open_external_url,
+                check_latest_release,
                 start_update_download,
                 install_app_update,
                 get_app_version,
