@@ -1747,8 +1747,17 @@ fn get_app_version() -> String {
 #[tauri::command]
 fn is_portable_app() -> bool {
     if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            if parent.join("uninstall.exe").exists()
+                || parent.join("Uninstall DeepNode Copy.exe").exists()
+            {
+                return false;
+            }
+        }
         let s = exe.to_string_lossy().to_lowercase();
-        !(s.contains("program files") || s.contains("appdata\\local\\programs"))
+        !(s.contains("program files")
+            || s.contains("appdata\\local\\programs")
+            || s.contains("appdata\\local\\deepnode copy"))
     } else {
         true
     }
@@ -2069,8 +2078,6 @@ fn install_app_update() -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
         let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let path_str = path.to_string_lossy().to_string();
         let cur_exe_str = current_exe.to_string_lossy().to_string();
@@ -2107,21 +2114,89 @@ fn install_app_update() -> Result<(), String> {
             }
         } else {
             // Portable standalone executable:
-            // Use standard cmd with delay to let host exit cleanly, replace file, and restart
-            let cmd_line = format!(
-                "ping 127.0.0.1 -n 2 > nul & copy /y \"{}\" \"{}\" & start \"\" \"{}\"",
-                path_str, cur_exe_str, cur_exe_str
-            );
-            std::process::Command::new("cmd")
-                .args(["/C", &cmd_line])
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn()
-                .map_err(|e| format!("Güncelleme süreci başlatılamadı: {}", e))?;
+            // On Windows NTFS, a running executable file can be renamed while open.
+            // Once renamed to .exe.old, the original path is vacant and can be replaced immediately.
+            let cur_clean_str = if cur_exe_str.starts_with(r"\\?\") {
+                cur_exe_str.trim_start_matches(r"\\?\").to_string()
+            } else {
+                cur_exe_str.clone()
+            };
+            let current_clean_path = PathBuf::from(&cur_clean_str);
+            let old_exe = current_clean_path.with_extension("exe.old");
+
+            if old_exe.exists() {
+                let _ = std::fs::remove_file(&old_exe);
+            }
+
+            let mut swap_done = false;
+            if let Ok(()) = std::fs::rename(&current_clean_path, &old_exe) {
+                if let Ok(_) = std::fs::copy(&path, &current_clean_path) {
+                    swap_done = true;
+                    log_engine(&format!(
+                        "In-process portable swap succeeded: '{}' replaced with '{}'",
+                        cur_clean_str, path_str
+                    ));
+                } else {
+                    // Rollback rename if copy failed
+                    let _ = std::fs::rename(&old_exe, &current_clean_path);
+                }
+            }
+
+            if swap_done {
+                // Launch the updated current_exe via ShellExecuteW
+                use std::ffi::OsStr;
+                use std::os::windows::ffi::OsStrExt;
+                let cur_wide: Vec<u16> = OsStr::new(&cur_clean_str)
+                    .encode_wide()
+                    .chain(std::iter::once(0))
+                    .collect();
+
+                unsafe {
+                    let res = windows::Win32::UI::Shell::ShellExecuteW(
+                        windows::Win32::Foundation::HWND(std::ptr::null_mut()),
+                        windows::core::w!("open"),
+                        windows::core::PCWSTR(cur_wide.as_ptr()),
+                        windows::core::PCWSTR::null(),
+                        windows::core::PCWSTR::null(),
+                        windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+                    );
+                    if res.0 as usize <= 32 {
+                        let _ = std::process::Command::new(&current_clean_path).spawn();
+                    }
+                }
+            } else {
+                // Fallback if direct rename failed (e.g. read-only folder):
+                // Create a temporary batch file to wait, copy, and relaunch without cmd /C quote mangling
+                let bat_path = std::env::temp_dir().join("DeepNodeUpdate").join("apply_update.bat");
+                let bat_content = format!(
+                    "@echo off\r\ntimeout /t 1 /nobreak >nul\r\n:retry\r\ncopy /y \"{}\" \"{}\" >nul 2>&1\r\nif errorlevel 1 (\r\n    timeout /t 1 /nobreak >nul\r\n    goto retry\r\n)\r\nstart \"\" \"{}\"\r\n(goto) 2>nul & del \"%~f0\"\r\n",
+                    path_str, cur_clean_str, cur_clean_str
+                );
+                let _ = std::fs::write(&bat_path, bat_content);
+
+                use std::ffi::OsStr;
+                use std::os::windows::ffi::OsStrExt;
+                let bat_wide: Vec<u16> = OsStr::new(&bat_path.to_string_lossy().to_string())
+                    .encode_wide()
+                    .chain(std::iter::once(0))
+                    .collect();
+
+                unsafe {
+                    windows::Win32::UI::Shell::ShellExecuteW(
+                        windows::Win32::Foundation::HWND(std::ptr::null_mut()),
+                        windows::core::w!("open"),
+                        windows::core::PCWSTR(bat_wide.as_ptr()),
+                        windows::core::PCWSTR::null(),
+                        windows::core::PCWSTR::null(),
+                        windows::Win32::UI::WindowsAndMessaging::SW_HIDE,
+                    );
+                }
+            }
         }
 
         // Close current application cleanly so file can be overwritten or setup can proceed
         std::thread::spawn(|| {
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::thread::sleep(std::time::Duration::from_millis(300));
             std::process::exit(0);
         });
 
@@ -2373,8 +2448,29 @@ fn cleanup_stale_temp_lists() {
     }
 }
 
+fn cleanup_stale_update_files() {
+    if let Ok(exe) = std::env::current_exe() {
+        let old_exe = exe.with_extension("exe.old");
+        if old_exe.exists() {
+            let _ = std::fs::remove_file(old_exe);
+        }
+    }
+    let temp_dir = std::env::temp_dir().join("DeepNodeUpdate");
+    if let Ok(entries) = std::fs::read_dir(&temp_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                if ext == "part" || ext == "bat" {
+                    let _ = std::fs::remove_file(p);
+                }
+            }
+        }
+    }
+}
+
 fn main() {
     cleanup_stale_temp_lists();
+    cleanup_stale_update_files();
 
     let app_dir = std::env::var("APPDATA")
         .map(|a| PathBuf::from(a).join("DeepNodeCopy"))

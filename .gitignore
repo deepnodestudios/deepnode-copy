@@ -17,6 +17,7 @@ src-tauri/target/
 *.msi
 *.msix
 *.dll
+*.zip
 !bin/deepnode_shell.dll
 installers/
 package_output/

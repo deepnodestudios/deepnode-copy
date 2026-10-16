@@ -19,7 +19,7 @@ impl SparsePackage {
   IgnorableNamespaces="desktop10">
 
   <Identity Name="{package_name}" ProcessorArchitecture="neutral" 
-    Publisher="{publisher_id}" Version="0.2.2.0"/>  
+    Publisher="{publisher_id}" Version="0.2.3.0"/>  
   <Properties>
     <PublisherDisplayName>DeepNode</PublisherDisplayName>
     <DisplayName>DeepNode Copy Shell Extension</DisplayName>

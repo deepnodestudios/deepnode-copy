@@ -93,7 +93,7 @@ $manifestContent = @"
 
   <Identity Name="DeepNodeCopy" ProcessorArchitecture="x64" 
     Publisher="$Publisher" 
-    Version="0.2.2.0"/>  
+    Version="0.2.3.0"/>  
   <Properties>
     <PublisherDisplayName>DeepNode Software</PublisherDisplayName>
     <DisplayName>DeepNode Copy Shell Extension</DisplayName>
