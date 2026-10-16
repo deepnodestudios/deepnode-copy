@@ -19,7 +19,7 @@ impl SparsePackage {
   IgnorableNamespaces="desktop10">
 
   <Identity Name="{package_name}" ProcessorArchitecture="neutral" 
-    Publisher="{publisher_id}" Version="0.2.1.0"/>  
+    Publisher="{publisher_id}" Version="0.2.2.0"/>  
   <Properties>
     <PublisherDisplayName>DeepNode</PublisherDisplayName>
     <DisplayName>DeepNode Copy Shell Extension</DisplayName>
@@ -77,14 +77,14 @@ impl SparsePackage {
 
         let ps_script = if is_manifest {
             format!(
-                "$existing = Get-AppxPackage -Name '*DeepNode*' -ErrorAction SilentlyContinue; \
+                "$existing = Get-AppxPackage -Name 'DeepNodeCopy' -ErrorAction SilentlyContinue; \
                  if ($existing) {{ Remove-AppxPackage -Package $existing.PackageFullName -ErrorAction SilentlyContinue }}; \
-                 Add-AppxPackage -Path '{}' -Register -DisableDevelopmentMode -ErrorAction Stop",
+                 Add-AppxPackage -Path '{}' -Register -ErrorAction Stop",
                 path_str
             )
         } else {
             format!(
-                "$existing = Get-AppxPackage -Name '*DeepNode*' -ErrorAction SilentlyContinue; \
+                "$existing = Get-AppxPackage -Name 'DeepNodeCopy' -ErrorAction SilentlyContinue; \
                  if ($existing) {{ Remove-AppxPackage -Package $existing.PackageFullName -ErrorAction SilentlyContinue }}; \
                  Add-AppxPackage -Path '{}' -ErrorAction Stop",
                 path_str
@@ -110,7 +110,7 @@ impl SparsePackage {
 
     /// Unregisters the Windows 11 package using PowerShell Remove-AppxPackage cmdlet.
     pub fn unregister_sparse_package() -> std::io::Result<()> {
-        let ps_script = "Get-AppxPackage -Name '*DeepNode*' -ErrorAction SilentlyContinue | Remove-AppxPackage -ErrorAction SilentlyContinue";
+        let ps_script = "Get-AppxPackage -Name 'DeepNodeCopy' -ErrorAction SilentlyContinue | Remove-AppxPackage -ErrorAction SilentlyContinue";
         let status = std::process::Command::new("powershell.exe")
             .arg("-NoProfile")
             .arg("-NonInteractive")

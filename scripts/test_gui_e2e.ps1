@@ -170,12 +170,12 @@ for ($attempt = 1; $attempt -le 3; $attempt++) {
 $copiedGuiFile = "$guiDst\gui_kaynak\gui_e2e_payload.bin"
 if ($guiProc.ExitCode -eq 0 -and (Test-Path $copiedGuiFile)) {
     # Hash doğrulaması
-    $guiHashOut = & $cliPath verify "$guiSample" --hash xxhash64 | Out-String
+    $guiHashOut = (& $cliPath verify "$guiSample" --hash xxhash64 | Out-String)
     $guiHashMatch = [regex]::Match($guiHashOut, 'Calculated Hash:\s+([a-fA-F0-9]+)')
 
     if ($guiHashMatch.Success) {
         $guiHash = $guiHashMatch.Groups[1].Value
-        $guiVerifyOut = & $cliPath verify "$copiedGuiFile" --hash xxhash64 --expected $guiHash | Out-String
+        $guiVerifyOut = (& $cliPath verify "$copiedGuiFile" --hash xxhash64 --expected $guiHash | Out-String)
         if ($LASTEXITCODE -eq 0 -and $guiVerifyOut -match "RESULT: SUCCESS") {
             Write-Host "  -> BASARILI: GUI arka planda aktarımı tamamladı, xxHash3 doğrulandı ve /close ile temiz kapandı (ExitCode: 0)!" -ForegroundColor Green
         } else {
