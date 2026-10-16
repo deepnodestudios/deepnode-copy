@@ -401,10 +401,10 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                       : "hover:bg-slate-800/30 border-l-4 border-l-transparent"
                   }`}
                 >
-                  <div className="flex items-center justify-between gap-1 mb-1">
-                    <div className="flex items-center gap-1.5">
+                  <div className="flex items-center justify-between gap-1.5 mb-1.5">
+                    <div className="flex items-center gap-1.5 min-w-0">
                       <span
-                        className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${
+                        className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded flex-shrink-0 ${
                           s.mode === "move"
                             ? "bg-purple-500/20 text-purple-300"
                             : "bg-blue-500/20 text-blue-300"
@@ -414,7 +414,16 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                       </span>
                       {getStatusBadge(s.status)}
                     </div>
-                    <span className="text-[10px] text-slate-500 font-mono">{dateStr}</span>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <span className="text-[10px] text-slate-500 font-mono tracking-tight">{dateStr}</span>
+                      <button
+                        onClick={(e) => handleDeleteSession(s.id, e)}
+                        className="w-5 h-5 flex items-center justify-center rounded text-slate-500 hover:text-rose-400 hover:bg-rose-500/15 opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition cursor-pointer"
+                        title={lang === "tr" ? "Bu kaydı sil" : "Delete record"}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
 
                   <div className="text-xs font-semibold text-slate-200 truncate flex items-center gap-1.5 mt-1">
@@ -435,15 +444,6 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                       </div>
                     )}
                   </div>
-
-                  {/* Delete button on hover */}
-                  <button
-                    onClick={(e) => handleDeleteSession(s.id, e)}
-                    className="absolute right-2 top-2 p-1.5 rounded-md text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 opacity-0 group-hover:opacity-100 transition cursor-pointer"
-                    title={lang === "tr" ? "Bu kaydı sil" : "Delete record"}
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
                 </div>
               );
             })
