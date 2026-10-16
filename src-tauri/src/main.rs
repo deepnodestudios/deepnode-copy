@@ -592,6 +592,8 @@ async fn close_app(app: AppHandle, state: State<'_, AppState>) -> Result<(), Str
     for (_, window) in app.webview_windows() {
         let _ = window.destroy();
     }
+    #[cfg(target_os = "windows")]
+    apply_silent_update_on_exit();
     std::process::exit(0);
 }
 
@@ -1885,6 +1887,442 @@ async fn check_latest_release() -> Result<LatestReleaseInfo, String> {
     })
 }
 
+fn compare_semver(v1: &str, v2: &str) -> i32 {
+    let parse = |v: &str| -> Vec<u32> {
+        let clean = v.trim_start_matches('v').trim_start_matches('V');
+        let base = clean.split('-').next().unwrap_or(clean);
+        base.split('.')
+            .map(|p| p.parse::<u32>().unwrap_or(0))
+            .collect()
+    };
+    let p1 = parse(v1);
+    let p2 = parse(v2);
+    for i in 0..3 {
+        let n1 = p1.get(i).copied().unwrap_or(0);
+        let n2 = p2.get(i).copied().unwrap_or(0);
+        if n1 > n2 {
+            return 1;
+        }
+        if n1 < n2 {
+            return -1;
+        }
+    }
+    0
+}
+
+#[tauri::command]
+fn get_staged_update() -> Option<serde_json::Value> {
+    let app_dir = std::env::var("APPDATA")
+        .map(|a| PathBuf::from(a).join("DeepNodeCopy"))
+        .ok()?;
+    let update_dir = app_dir.join("updates");
+    let json_path = update_dir.join("pending_update.json");
+    if !json_path.exists() {
+        return None;
+    }
+    let s = std::fs::read_to_string(&json_path).ok()?;
+    let val: serde_json::Value = serde_json::from_str(&s).ok()?;
+    let target_ver = val.get("version").and_then(|v| v.as_str())?;
+    if compare_semver(target_ver, env!("CARGO_PKG_VERSION")) > 0 {
+        let target_name = val.get("file_name").and_then(|v| v.as_str()).unwrap_or("pending_setup.exe");
+        if update_dir.join(target_name).exists() {
+            return Some(val);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn apply_silent_update_on_exit() {
+    let app_dir = match std::env::var("APPDATA") {
+        Ok(a) => PathBuf::from(a).join("DeepNodeCopy"),
+        Err(_) => return,
+    };
+    let update_dir = app_dir.join("updates");
+    let json_path = update_dir.join("pending_update.json");
+
+    if !json_path.exists() {
+        return;
+    }
+
+    let meta_str = match std::fs::read_to_string(&json_path) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let meta: serde_json::Value = match serde_json::from_str(&meta_str) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let target_version = meta.get("version").and_then(|v| v.as_str()).unwrap_or("");
+    let is_setup = meta.get("is_setup").and_then(|v| v.as_bool()).unwrap_or(true);
+    let target_file_name = meta.get("file_name").and_then(|v| v.as_str()).unwrap_or("pending_setup.exe");
+    let update_file = update_dir.join(target_file_name);
+
+    if !update_file.exists() {
+        let _ = std::fs::remove_file(&json_path);
+        return;
+    }
+
+    let cur_ver = env!("CARGO_PKG_VERSION");
+    if compare_semver(cur_ver, target_version) >= 0 {
+        let _ = std::fs::remove_file(&update_file);
+        let _ = std::fs::remove_file(&json_path);
+        return;
+    }
+
+    if verify_installer_authenticode(&update_file).is_err() {
+        log_engine("apply_silent_update_on_exit: authenticode verification failed, discarding");
+        let _ = std::fs::remove_file(&update_file);
+        let _ = std::fs::remove_file(&json_path);
+        return;
+    }
+
+    log_engine(&format!(
+        "apply_silent_update_on_exit: applying silent update to v{} in background without displaying any window",
+        target_version
+    ));
+
+    if is_setup {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let _ = std::process::Command::new(&update_file)
+            .arg("/S")
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn();
+    } else {
+        if let Ok(cur_exe) = std::env::current_exe() {
+            let old_exe = cur_exe.with_extension("exe.old");
+            let _ = std::fs::remove_file(&old_exe);
+            if std::fs::rename(&cur_exe, &old_exe).is_ok() {
+                if std::fs::copy(&update_file, &cur_exe).is_ok() {
+                    let _ = std::fs::remove_file(&update_file);
+                    let _ = std::fs::remove_file(&json_path);
+                    log_engine("apply_silent_update_on_exit: portable in-place swap complete");
+                } else {
+                    let _ = std::fs::rename(&old_exe, &cur_exe);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn apply_pending_update_at_startup() {
+    let app_dir = match std::env::var("APPDATA") {
+        Ok(a) => PathBuf::from(a).join("DeepNodeCopy"),
+        Err(_) => return,
+    };
+    let update_dir = app_dir.join("updates");
+    let json_path = update_dir.join("pending_update.json");
+
+    if !json_path.exists() {
+        return;
+    }
+
+    let meta_str = match std::fs::read_to_string(&json_path) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let meta: serde_json::Value = match serde_json::from_str(&meta_str) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let target_version = meta.get("version").and_then(|v| v.as_str()).unwrap_or("");
+    let is_setup = meta.get("is_setup").and_then(|v| v.as_bool()).unwrap_or(true);
+    let target_file_name = meta.get("file_name").and_then(|v| v.as_str()).unwrap_or("pending_setup.exe");
+    let update_file = update_dir.join(target_file_name);
+
+    if !update_file.exists() {
+        let _ = std::fs::remove_file(&json_path);
+        return;
+    }
+
+    let cur_ver = env!("CARGO_PKG_VERSION");
+    if compare_semver(cur_ver, target_version) >= 0 {
+        let _ = std::fs::remove_file(&update_file);
+        let _ = std::fs::remove_file(&json_path);
+        return;
+    }
+
+    if verify_installer_authenticode(&update_file).is_err() {
+        let _ = std::fs::remove_file(&update_file);
+        let _ = std::fs::remove_file(&json_path);
+        return;
+    }
+
+    log_engine(&format!(
+        "apply_pending_update_at_startup: applying update to v{} (current is v{}) before continuing launch",
+        target_version, cur_ver
+    ));
+
+    let raw_args: Vec<String> = std::env::args().collect();
+    let cur_exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    if is_setup {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let old_exe = cur_exe.with_extension("exe.old");
+        let _ = std::fs::remove_file(&old_exe);
+        let _ = std::fs::rename(&cur_exe, &old_exe);
+
+        let status = std::process::Command::new(&update_file)
+            .arg("/S")
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+
+        if let Ok(st) = status {
+            if st.success() {
+                let _ = std::fs::remove_file(&update_file);
+                let _ = std::fs::remove_file(&json_path);
+
+                if cur_exe.exists() {
+                    let mut cmd = std::process::Command::new(&cur_exe);
+                    if raw_args.len() > 1 {
+                        cmd.args(&raw_args[1..]);
+                    }
+                    let _ = cmd.spawn();
+                    std::process::exit(0);
+                }
+            }
+        }
+
+        if !cur_exe.exists() && old_exe.exists() {
+            let _ = std::fs::rename(&old_exe, &cur_exe);
+        }
+    } else {
+        let old_exe = cur_exe.with_extension("exe.old");
+        let _ = std::fs::remove_file(&old_exe);
+        if std::fs::rename(&cur_exe, &old_exe).is_ok() {
+            if std::fs::copy(&update_file, &cur_exe).is_ok() {
+                let _ = std::fs::remove_file(&update_file);
+                let _ = std::fs::remove_file(&json_path);
+
+                let mut cmd = std::process::Command::new(&cur_exe);
+                if raw_args.len() > 1 {
+                    cmd.args(&raw_args[1..]);
+                }
+                let _ = cmd.spawn();
+                std::process::exit(0);
+            } else {
+                let _ = std::fs::rename(&old_exe, &cur_exe);
+            }
+        }
+    }
+}
+
+async fn run_silent_update_background_service(app: AppHandle, state: Arc<AppState>) {
+    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+
+    let mut wait_count = 0;
+    while state.is_worker_running.load(Ordering::SeqCst) && wait_count < 60 {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        wait_count += 1;
+    }
+    if state.is_worker_running.load(Ordering::SeqCst) {
+        log_engine("Silent update check postponed: transfer is actively running");
+        return;
+    }
+
+    let app_dir = match std::env::var("APPDATA") {
+        Ok(a) => PathBuf::from(a).join("DeepNodeCopy"),
+        Err(_) => return,
+    };
+    let update_dir = app_dir.join("updates");
+    let json_path = update_dir.join("pending_update.json");
+
+    if json_path.exists() {
+        if let Ok(meta_str) = std::fs::read_to_string(&json_path) {
+            if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&meta_str) {
+                let staged_ver = meta.get("version").and_then(|v| v.as_str()).unwrap_or("");
+                let cur_ver = env!("CARGO_PKG_VERSION");
+                if compare_semver(staged_ver, cur_ver) > 0 {
+                    let target_name = meta.get("file_name").and_then(|v| v.as_str()).unwrap_or("pending_setup.exe");
+                    let staged_file = update_dir.join(target_name);
+                    if staged_file.exists() && verify_installer_authenticode(&staged_file).is_ok() {
+                        log_engine(&format!(
+                            "Silent update already staged for v{} (ready to apply on exit or next run)",
+                            staged_ver
+                        ));
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    log_engine("Silent update background check querying GitHub releases...");
+    let release = match check_latest_release().await {
+        Ok(r) => r,
+        Err(e) => {
+            log_engine(&format!("Silent update check failed to fetch latest release: {}", e));
+            return;
+        }
+    };
+
+    let latest_tag = release.tag_name;
+    let cur_ver = env!("CARGO_PKG_VERSION");
+    if compare_semver(&latest_tag, cur_ver) <= 0 {
+        log_engine(&format!(
+            "Silent update check: application is up-to-date (current: v{}, latest: {})",
+            cur_ver, latest_tag
+        ));
+        return;
+    }
+
+    log_engine(&format!(
+        "Silent update found newer version: {} (current: v{}). Choosing download asset...",
+        latest_tag, cur_ver
+    ));
+
+    let is_portable = is_portable_app();
+    let is_setup = !is_portable;
+
+    let chosen_asset = if is_setup {
+        release.assets.iter().find(|a| {
+            let n = a.name.to_lowercase();
+            n == "deepnodecopy_setup.exe" || (n.contains("setup") && n.ends_with(".exe"))
+        }).cloned()
+    } else {
+        release.assets.iter().find(|a| {
+            let n = a.name.to_lowercase();
+            n == "deepnodecopy.exe" || (n.ends_with(".exe") && !n.contains("setup"))
+        }).cloned()
+    };
+
+    let asset = match chosen_asset {
+        Some(a) => a,
+        None => {
+            log_engine("Silent update asset not found for current environment");
+            return;
+        }
+    };
+
+    let file_name = if is_setup {
+        "pending_setup.exe"
+    } else {
+        "pending_update.exe"
+    };
+
+    let _ = std::fs::create_dir_all(&update_dir);
+    let part_path = update_dir.join(format!("{}.part", file_name));
+    let target_path = update_dir.join(file_name);
+
+    log_engine(&format!(
+        "Silently downloading {} ({:.2} MB) in background...",
+        asset.name, asset.size as f64 / 1_048_576.0
+    ));
+
+    let client = match reqwest::Client::builder()
+        .user_agent(format!("DeepNodeCopy/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            log_engine(&format!("Silent update HTTP client build failed: {}", e));
+            return;
+        }
+    };
+
+    let res = match client.get(&asset.browser_download_url).send().await {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            log_engine(&format!("Silent update download failed: HTTP {}", r.status()));
+            return;
+        }
+        Err(e) => {
+            log_engine(&format!("Silent update network error: {}", e));
+            return;
+        }
+    };
+
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    let mut file = match tokio::fs::File::create(&part_path).await {
+        Ok(f) => f,
+        Err(e) => {
+            log_engine(&format!("Silent update could not create part file: {}", e));
+            return;
+        }
+    };
+
+    let mut stream = res.bytes_stream();
+    let mut download_ok = true;
+
+    while let Some(chunk_res) = stream.next().await {
+        match chunk_res {
+            Ok(chunk) => {
+                if let Err(e) = file.write_all(&chunk).await {
+                    log_engine(&format!("Silent update write failed: {}", e));
+                    download_ok = false;
+                    break;
+                }
+            }
+            Err(e) => {
+                log_engine(&format!("Silent update stream failed: {}", e));
+                download_ok = false;
+                break;
+            }
+        }
+    }
+
+    let _ = file.flush().await;
+    drop(file);
+
+    if !download_ok {
+        let _ = tokio::fs::remove_file(&part_path).await;
+        return;
+    }
+
+    if let Err(err) = verify_installer_authenticode(&part_path) {
+        log_engine(&format!("Silent update signature verification failed: {}", err));
+        let _ = std::fs::remove_file(&part_path);
+        return;
+    }
+
+    if let Err(e) = std::fs::rename(&part_path, &target_path) {
+        log_engine(&format!("Silent update rename failed: {}", e));
+        let _ = std::fs::remove_file(&part_path);
+        return;
+    }
+
+    let clean_ver = latest_tag.trim_start_matches('v').trim_start_matches('V').to_string();
+    let meta = serde_json::json!({
+        "version": clean_ver,
+        "target_tag": latest_tag,
+        "is_setup": is_setup,
+        "file_name": file_name,
+        "downloaded_at": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        "ready": true
+    });
+
+    if let Ok(meta_str) = serde_json::to_string_pretty(&meta) {
+        let _ = std::fs::write(&json_path, meta_str);
+    }
+
+    log_engine(&format!(
+        "Silent update v{} successfully staged! Will be applied silently when application closes or on next run.",
+        clean_ver
+    ));
+
+    let _ = app.emit("staged_update_ready", serde_json::json!({
+        "version": clean_ver,
+        "tag": latest_tag,
+        "is_setup": is_setup
+    }));
+}
+
 #[tauri::command]
 async fn start_update_download(app: AppHandle, url: String) -> Result<(), String> {
     let parsed_url = validate_update_url(&url)?;
@@ -2471,6 +2909,8 @@ fn cleanup_stale_update_files() {
 fn main() {
     cleanup_stale_temp_lists();
     cleanup_stale_update_files();
+    #[cfg(target_os = "windows")]
+    apply_pending_update_at_startup();
 
     let app_dir = std::env::var("APPDATA")
         .map(|a| PathBuf::from(a).join("DeepNodeCopy"))
@@ -2705,6 +3145,12 @@ fn main() {
                     }
                 }
 
+                let silent_app = app.handle().clone();
+                let silent_state = Arc::clone(&state_for_setup);
+                tauri::async_runtime::spawn(async move {
+                    run_silent_update_background_service(silent_app, silent_state).await;
+                });
+
                 Ok(())
             })
             .on_window_event(|window, event| {
@@ -2743,6 +3189,8 @@ fn main() {
                         }
 
                         let _ = win.destroy();
+                        #[cfg(target_os = "windows")]
+                        apply_silent_update_on_exit();
                         std::process::exit(0);
                     });
                 }
@@ -2778,6 +3226,7 @@ fn main() {
                 start_update_download,
                 install_app_update,
                 get_app_version,
+                get_staged_update,
                 is_portable_app,
                 get_history_sessions,
                 get_history_session_files,

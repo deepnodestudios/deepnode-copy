@@ -48,6 +48,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose, lang })
 
   const t = translations[lang] || translations.tr;
   const [currentVersion, setCurrentVersion] = useState(packageJson.version);
+  const [stagedUpdate, setStagedUpdate] = useState<{ version: string; is_setup: boolean } | null>(null);
 
   useEffect(() => {
     invoke<string>("get_app_version")
@@ -55,7 +56,17 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose, lang })
         if (ver) setCurrentVersion(ver);
       })
       .catch(() => {});
-  }, []);
+
+    if (isOpen) {
+      invoke<any>("get_staged_update")
+        .then((res) => {
+          if (res && res.version) {
+            setStagedUpdate({ version: res.version, is_setup: !!res.is_setup });
+          }
+        })
+        .catch(() => {});
+    }
+  }, [isOpen]);
 
   const compareVersions = (v1: string, v2: string): number => {
     const parse = (v: string) =>
@@ -184,6 +195,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose, lang })
     if (!isOpen) return;
     let isMounted = true;
     let unlisten: (() => void) | null = null;
+    let unlistenStaged: (() => void) | null = null;
 
     listen<UpdateProgressPayload>("update_progress", (event) => {
       if (!isMounted) return;
@@ -214,9 +226,27 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose, lang })
         console.error("Failed to setup update_progress listener:", err);
       });
 
+    listen<any>("staged_update_ready", (event) => {
+      if (!isMounted) return;
+      if (event.payload && event.payload.version) {
+        setStagedUpdate({ version: event.payload.version, is_setup: !!event.payload.is_setup });
+      }
+    })
+      .then((fn) => {
+        if (!isMounted) {
+          fn();
+        } else {
+          unlistenStaged = fn;
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to setup staged_update_ready listener:", err);
+      });
+
     return () => {
       isMounted = false;
       if (unlisten) unlisten();
+      if (unlistenStaged) unlistenStaged();
     };
   }, [isOpen]);
 
@@ -314,8 +344,32 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose, lang })
               <span>{updateState === "checking" ? t.checkingUpdates : t.checkUpdates}</span>
             </button>
 
+            {/* Silent update ready / staged card */}
+            {stagedUpdate && updateState !== "available" && (
+              <div className="w-full mt-3 p-3 rounded-xl bg-indigo-950/40 border border-indigo-700/50 flex flex-col gap-1.5 text-left animate-in fade-in duration-200">
+                <div className="flex items-center gap-1.5 text-xs text-indigo-300 font-semibold">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>{lang === "tr" ? "Güncelleme Hazır" : "Update Ready"} (v{stagedUpdate.version})</span>
+                </div>
+                <p className="text-[11px] text-neutral-400 leading-relaxed">
+                  {lang === "tr"
+                    ? "Yeni sürüm arka planda sessizce indirildi. Uygulama kapatıldığında veya bir sonraki kopyalama işleminde otomatik olarak uygulanacaktır."
+                    : "The update was downloaded silently in the background. It will be applied automatically when the app closes or on the next copy task."}
+                </p>
+                <button
+                  type="button"
+                  onClick={triggerInstall}
+                  disabled={installing}
+                  className="mt-1 w-full py-1.5 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs transition flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${installing ? "animate-spin" : ""}`} />
+                  <span>{installing ? (lang === "tr" ? "Uygulanıyor..." : "Applying...") : (lang === "tr" ? "Şimdi Yeniden Başlat ve Güncelle" : "Restart & Update Now")}</span>
+                </button>
+              </div>
+            )}
+
             {/* Up to date */}
-            {updateState === "upToDate" && (
+            {updateState === "upToDate" && !stagedUpdate && (
               <div className="mt-3 flex items-center gap-1.5 text-xs text-emerald-400 font-medium bg-emerald-950/30 border border-emerald-900/50 px-3 py-1.5 rounded-lg">
                 <CheckCircle2 className="w-4 h-4" />
                 <span>{t.upToDate}</span>
