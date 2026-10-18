@@ -5,8 +5,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State, Window};
-use tauri::tray::{TrayIconBuilder, TrayIconEvent};
-use tauri::menu::{Menu, MenuItem};
 use tokio::sync::{mpsc, Mutex};
 
 mod dialog;
@@ -51,6 +49,10 @@ pub struct LaunchArgs {
     pub auto_start: bool,
     pub conflict_policy: Option<String>,
     pub on_finish: Option<String>,
+    /// Physical screen point where the popup's top-left corner goes (`--pos x,y`); the shell
+    /// extension passes the cursor position captured at drop/paste time, like TeraCopy.
+    #[serde(default)]
+    pub popup_anchor: Option<(i32, i32)>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -132,6 +134,7 @@ fn parse_cli_args(args: &[String]) -> LaunchArgs {
     let mut auto_start = false;
     let mut conflict_policy = None;
     let mut on_finish = None;
+    let mut popup_anchor = None;
 
     if args.len() > 1 {
         let first = clean_path_str(&args[1]).to_lowercase();
@@ -163,6 +166,12 @@ fn parse_cli_args(args: &[String]) -> LaunchArgs {
                 is_popup = true;
             } else if arg.eq_ignore_ascii_case("--silent") || arg.eq_ignore_ascii_case("--background") || arg.eq_ignore_ascii_case("-b") {
                 is_silent = true;
+            } else if arg.eq_ignore_ascii_case("--pos") && r_idx + 1 < recombined.len() {
+                let pos = clean_path_str(&recombined[r_idx + 1]);
+                popup_anchor = pos
+                    .split_once(',')
+                    .and_then(|(x, y)| Some((x.trim().parse().ok()?, y.trim().parse().ok()?)));
+                r_idx += 1;
             } else if arg.eq_ignore_ascii_case("--mode") && r_idx + 1 < recombined.len() {
                 mode = clean_path_str(&recombined[r_idx + 1]);
                 r_idx += 1;
@@ -291,6 +300,7 @@ fn parse_cli_args(args: &[String]) -> LaunchArgs {
         auto_start,
         conflict_policy,
         on_finish,
+        popup_anchor,
     }
 }
 
@@ -627,445 +637,125 @@ fn get_clipboard_files() -> Vec<String> {
 }
 
 #[cfg(target_os = "windows")]
-fn is_explorer_window(hwnd: windows::Win32::Foundation::HWND) -> bool {
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
-        PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-    use windows::Win32::UI::WindowsAndMessaging::{
-        FindWindowW, GetAncestor, GetClassNameW, GetShellWindow, GetWindowThreadProcessId, GA_ROOT,
-    };
-    use windows::core::w;
-
-    if hwnd.0.is_null() {
-        return false;
-    }
-
-    unsafe {
-        let root = GetAncestor(hwnd, GA_ROOT);
-        let target = if root.0.is_null() { hwnd } else { root };
-
-        // 1. Check known Explorer window class names on target AND hwnd directly
-        for h in [hwnd, target] {
-            let mut class_buf = [0u16; 128];
-            let len = GetClassNameW(h, &mut class_buf);
-            if len > 0 {
-                let class_name = String::from_utf16_lossy(&class_buf[..len as usize]);
-                if class_name == "CabinetWClass"
-                    || class_name == "ExploreWClass"
-                    || class_name == "Progman"
-                    || class_name == "WorkerW"
-                    || class_name == "ShellTabWindowClass"
-                    || class_name == "SHELLDLL_DefView"
-                    || class_name == "SysListView32"
-                    || class_name == "DirectUIHWND"
-                    || class_name == "XamlExplorerHostIslandWindow"
-                    || class_name == "Windows.UI.Core.CoreWindow"
-                {
-                    return true;
-                }
-            }
-        }
-
-        // 2. Compare PID with Windows Explorer Shell Window / Taskbar PID
-        let mut shell_pid = 0;
-        let shell_hwnd = GetShellWindow();
-        if !shell_hwnd.0.is_null() {
-            GetWindowThreadProcessId(shell_hwnd, Some(&mut shell_pid));
-        }
-        if shell_pid == 0 {
-            if let Ok(tray_hwnd) = FindWindowW(w!("Shell_TrayWnd"), None) {
-                if !tray_hwnd.0.is_null() {
-                    GetWindowThreadProcessId(tray_hwnd, Some(&mut shell_pid));
-                }
-            }
-        }
-
-        let mut pid = 0;
-        GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        if pid == 0 {
-            GetWindowThreadProcessId(target, Some(&mut pid));
-        }
-
-        if pid != 0 && shell_pid != 0 && pid == shell_pid {
-            return true;
-        }
-
-        // 3. Fallback: Query process executable image name for explorer.exe
-        if pid != 0 {
-            if let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
-                let mut name_buf = [0u16; 512];
-                let mut size = name_buf.len() as u32;
-                let res = QueryFullProcessImageNameW(
-                    handle,
-                    PROCESS_NAME_FORMAT(0),
-                    windows::core::PWSTR(name_buf.as_mut_ptr()),
-                    &mut size,
-                );
-                let _ = CloseHandle(handle);
-                if res.is_ok() && size > 0 {
-                    let full_path = String::from_utf16_lossy(&name_buf[..size as usize]).to_lowercase();
-                    if full_path.ends_with("explorer.exe") {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    false
-}
-
-#[cfg(target_os = "windows")]
-fn decode_percent_encoded(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut result = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..=i + 2]).unwrap_or(""), 16) {
-                result.push(byte);
-                i += 3;
-                continue;
-            }
-        }
-        result.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&result).to_string()
-}
-
-#[cfg(target_os = "windows")]
-fn get_explorer_window_path(target_hwnd: windows::Win32::Foundation::HWND) -> Option<String> {
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
-    use windows::Win32::UI::Shell::{IShellWindows, ShellWindows, IWebBrowserApp, IShellFolderViewDual, Folder2};
-    use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GA_ROOT, IsChild, GetClassNameW};
-    use windows::core::{Interface, VARIANT};
-
-    unsafe {
-        let root_target = GetAncestor(target_hwnd, GA_ROOT);
-        let target_raw = if root_target.0.is_null() { target_hwnd.0 as isize } else { root_target.0 as isize };
-
-        let mut buf = [0u16; 64];
-        let len = GetClassNameW(if root_target.0.is_null() { target_hwnd } else { root_target }, &mut buf);
-        let cls = String::from_utf16_lossy(&buf[..len as usize]);
-        if cls == "Progman" || cls == "WorkerW" {
-            return std::env::var("USERPROFILE").ok().map(|p| PathBuf::from(p).join("Desktop").to_string_lossy().to_string());
-        }
-
-        let sw: IShellWindows = match CoCreateInstance(&ShellWindows, None, CLSCTX_ALL) {
-            Ok(s) => s,
-            Err(e) => {
-                log_engine(&format!("IShellWindows CoCreateInstance failed in get_path: {:?}", e));
-                return std::env::var("USERPROFILE").ok().map(|p| PathBuf::from(p).join("Desktop").to_string_lossy().to_string());
-            }
-        };
-
-        let count = sw.Count().unwrap_or(0);
-        let mut first_explorer_path: Option<String> = None;
-
-        for i in 0..count {
-            let var = VARIANT::from(i);
-            if let Ok(disp) = sw.Item(&var) {
-                if let Ok(browser) = disp.cast::<IWebBrowserApp>() {
-                    let win_hwnd_num = match browser.HWND() {
-                        Ok(h) => h.0 as isize,
-                        Err(_) => 0,
-                    };
-
-                    let is_match = win_hwnd_num != 0 && (
-                        win_hwnd_num == target_raw
-                        || win_hwnd_num == target_hwnd.0 as isize
-                        || IsChild(HWND(win_hwnd_num as *mut _), target_hwnd).as_bool()
-                        || IsChild(target_hwnd, HWND(win_hwnd_num as *mut _)).as_bool()
-                        || (!root_target.0.is_null() && GetAncestor(HWND(win_hwnd_num as *mut _), GA_ROOT) == root_target)
-                    );
-
-                    let mut cur_path: Option<String> = None;
-
-                    // 1. Primary: IShellFolderViewDual -> Folder -> Folder2 -> Self_ -> Path (resolves special folders and tabs in Win11)
-                    if let Ok(doc_disp) = browser.Document() {
-                        if let Ok(folder_view) = doc_disp.cast::<IShellFolderViewDual>() {
-                            if let Ok(folder) = folder_view.Folder() {
-                                if let Ok(folder2) = folder.cast::<Folder2>() {
-                                    if let Ok(folder_item) = folder2.Self_() {
-                                        if let Ok(path_bstr) = folder_item.Path() {
-                                            let p = path_bstr.to_string();
-                                            if !p.is_empty() && (p.contains(":\\") || p.starts_with("\\\\")) {
-                                                cur_path = Some(p);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // 2. Secondary fallback: LocationURL
-                    if cur_path.is_none() {
-                        if let Ok(loc_bstr) = browser.LocationURL() {
-                            let url = loc_bstr.to_string();
-                            if url.starts_with("file:///") {
-                                let clean = decode_percent_encoded(url.trim_start_matches("file:///")).replace('/', "\\");
-                                cur_path = Some(clean);
-                            }
-                        }
-                    }
-
-                    if let Some(p) = cur_path {
-                        if is_match {
-                            return Some(p);
-                        }
-                        if first_explorer_path.is_none() {
-                            first_explorer_path = Some(p);
-                        }
-                    }
-                }
-            }
-        }
-
-        if first_explorer_path.is_some() {
-            return first_explorer_path;
-        }
-
-        std::env::var("USERPROFILE").ok().map(|p| PathBuf::from(p).join("Desktop").to_string_lossy().to_string())
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn get_explorer_selected_files(target_hwnd: windows::Win32::Foundation::HWND) -> Vec<String> {
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
-    use windows::Win32::UI::Shell::{IShellWindows, ShellWindows, IWebBrowserApp, IShellFolderViewDual};
-    use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GA_ROOT, IsChild, GetClassNameW};
-    use windows::core::{Interface, VARIANT};
-
-    let mut results = Vec::new();
-    unsafe {
-        let root_target = GetAncestor(target_hwnd, GA_ROOT);
-        let target_raw = if root_target.0.is_null() { target_hwnd.0 as isize } else { root_target.0 as isize };
-
-        let mut buf = [0u16; 64];
-        let len = GetClassNameW(if root_target.0.is_null() { target_hwnd } else { root_target }, &mut buf);
-        let cls = String::from_utf16_lossy(&buf[..len as usize]);
-        let is_desktop = cls == "Progman" || cls == "WorkerW";
-
-        let sw: IShellWindows = match CoCreateInstance(&ShellWindows, None, CLSCTX_ALL) {
-            Ok(s) => s,
-            Err(e) => {
-                log_engine(&format!("IShellWindows CoCreateInstance failed in get_selected: {:?}", e));
-                return results;
-            }
-        };
-
-        if is_desktop {
-            let mut desk_hwnd = 0;
-            let empty_loc = VARIANT::default();
-            let empty_root = VARIANT::default();
-            // SWC_DESKTOP = 8, SWFO_NEEDDISPATCH = 1
-            if let Ok(disp) = sw.FindWindowSW(
-                &empty_loc,
-                &empty_root,
-                windows::Win32::UI::Shell::ShellWindowTypeConstants(8),
-                &mut desk_hwnd,
-                windows::Win32::UI::Shell::ShellWindowFindWindowOptions(1),
-            ) {
-                if let Ok(browser) = disp.cast::<IWebBrowserApp>() {
-                    if let Ok(doc_disp) = browser.Document() {
-                        if let Ok(folder_view) = doc_disp.cast::<IShellFolderViewDual>() {
-                            if let Ok(selected_items) = folder_view.SelectedItems() {
-                                if let Ok(cnt) = selected_items.Count() {
-                                    for idx in 0..cnt {
-                                        let var_idx = VARIANT::from(idx);
-                                        if let Ok(item) = selected_items.Item(&var_idx) {
-                                            if let Ok(path_bstr) = item.Path() {
-                                                let p = path_bstr.to_string();
-                                                if !p.is_empty() {
-                                                    results.push(p);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if !results.is_empty() {
-                return results;
-            }
-        }
-
-        let count = sw.Count().unwrap_or(0);
-        let mut fallback_results = Vec::new();
-
-        for i in 0..count {
-            let var = VARIANT::from(i);
-            if let Ok(disp) = sw.Item(&var) {
-                if let Ok(browser) = disp.cast::<IWebBrowserApp>() {
-                    let win_hwnd_num = match browser.HWND() {
-                        Ok(h) => h.0 as isize,
-                        Err(_) => 0,
-                    };
-
-                    let is_match = win_hwnd_num != 0 && (
-                        win_hwnd_num == target_raw
-                        || win_hwnd_num == target_hwnd.0 as isize
-                        || IsChild(HWND(win_hwnd_num as *mut _), target_hwnd).as_bool()
-                        || IsChild(target_hwnd, HWND(win_hwnd_num as *mut _)).as_bool()
-                        || (!root_target.0.is_null() && GetAncestor(HWND(win_hwnd_num as *mut _), GA_ROOT) == root_target)
-                    );
-
-                    if let Ok(doc_disp) = browser.Document() {
-                        if let Ok(folder_view) = doc_disp.cast::<IShellFolderViewDual>() {
-                            if let Ok(selected_items) = folder_view.SelectedItems() {
-                                if let Ok(cnt) = selected_items.Count() {
-                                    let mut cur_items = Vec::new();
-                                    for idx in 0..cnt {
-                                        let var_idx = VARIANT::from(idx);
-                                        if let Ok(item) = selected_items.Item(&var_idx) {
-                                            if let Ok(path_bstr) = item.Path() {
-                                                let p = path_bstr.to_string();
-                                                if !p.is_empty() {
-                                                    cur_items.push(p);
-                                                }
-                                            }
-                                        }
-                                    }
-                                    if is_match && !cur_items.is_empty() {
-                                        return cur_items;
-                                    }
-                                    if fallback_results.is_empty() && !cur_items.is_empty() {
-                                        fallback_results = cur_items;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if !results.is_empty() {
-            results
-        } else {
-            fallback_results
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
 fn force_window_to_foreground(window: &tauri::WebviewWindow) {
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowThreadProcessId,
         SetForegroundWindow, SetWindowPos, ShowWindow, BringWindowToTop, IsIconic,
         HWND_TOPMOST,
         SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE, SW_SHOW,
     };
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        keybd_event, SetActiveWindow, SetFocus, KEYEVENTF_KEYUP, VK_MENU,
-    };
-    use windows::Win32::System::Threading::AttachThreadInput;
     use windows::Win32::Foundation::HWND;
 
+    // Foreground rights come from whoever launched or messaged us: the shell extension and
+    // the second-instance IPC client call AllowSetForegroundWindow for this process. No
+    // AttachThreadInput / synthetic Alt key: those hung WebView2 when Explorer's thread was
+    // busy and are the kind of input tampering antivirus behaviour monitors flag.
     if let Ok(hwnd_raw) = window.hwnd() {
         let hwnd = HWND(hwnd_raw.0 as *mut _);
         unsafe {
-            let cur_fore = GetForegroundWindow();
-            let cur_thread = GetWindowThreadProcessId(cur_fore, None);
-            let app_thread = windows::Win32::System::Threading::GetCurrentThreadId();
-            if cur_thread != 0 && cur_thread != app_thread {
-                let _ = AttachThreadInput(cur_thread, app_thread, true);
-            }
-
             if IsIconic(hwnd).as_bool() {
                 let _ = ShowWindow(hwnd, SW_RESTORE);
             } else {
                 let _ = ShowWindow(hwnd, SW_SHOW);
             }
 
-            // Alt-key (VK_MENU) pulse to break Windows foreground lock
-            keybd_event(VK_MENU.0 as u8, 0, Default::default(), 0);
             let _ = BringWindowToTop(hwnd);
             let _ = SetForegroundWindow(hwnd);
-            let _ = SetActiveWindow(hwnd);
-            let _ = SetFocus(hwnd);
-            keybd_event(VK_MENU.0 as u8, 0, KEYEVENTF_KEYUP, 0);
 
             // Pop-up must stay HWND_TOPMOST so user's single click is immediately received without an activation delay
             let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        }
+    }
+}
 
-            if cur_thread != 0 && cur_thread != app_thread {
-                let _ = AttachThreadInput(cur_thread, app_thread, false);
+/// Logical size of the copy/paste choice popup.
+const POPUP_SIZE: (f64, f64) = (480.0, 320.0);
+
+#[cfg(target_os = "windows")]
+/// Sizes the choice popup and places it like TeraCopy's "Paste Window": the visible window's
+/// top-left corner sits at `anchor` (the cursor position the shell extension captured at
+/// drop/paste time) or at the current cursor, on the monitor under that point, shifted — not
+/// flipped — to stay inside that monitor's work area (taskbar excluded).
+/// Must run on the main thread so the size change is applied before the window is measured.
+fn place_popup_window(window: &tauri::WebviewWindow, anchor: Option<(i32, i32)>) {
+    use windows::Win32::Foundation::{HWND, POINT, RECT};
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+    use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
+    use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetWindowRect};
+
+    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+        width: POPUP_SIZE.0,
+        height: POPUP_SIZE.1,
+    }));
+    let Ok(hwnd_raw) = window.hwnd() else { return };
+    let hwnd = HWND(hwnd_raw.0 as *mut _);
+
+    let pt = match anchor {
+        Some((x, y)) => POINT { x, y },
+        None => {
+            let mut p = POINT::default();
+            if unsafe { GetCursorPos(&mut p) }.is_err() {
+                return;
             }
+            p
+        }
+    };
+
+    // Second pass only matters when the first move crossed to a monitor with another DPI and
+    // Windows rescaled the window.
+    for _ in 0..2 {
+        unsafe {
+            let monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+            let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+            if monitor.is_invalid() || !GetMonitorInfoW(monitor, &mut info).as_bool() {
+                return;
+            }
+            let work = info.rcWork;
+
+            // The undecorated window keeps invisible resize borders around its visible frame;
+            // align and clamp the visible frame, not the outer rect.
+            let mut outer = RECT::default();
+            if GetWindowRect(hwnd, &mut outer).is_err() {
+                return;
+            }
+            let mut visible = outer;
+            let _ = DwmGetWindowAttribute(
+                hwnd,
+                DWMWA_EXTENDED_FRAME_BOUNDS,
+                &mut visible as *mut RECT as *mut _,
+                std::mem::size_of::<RECT>() as u32,
+            );
+
+            // Physical sizes scale from the window's current DPI to the target monitor's DPI.
+            let (mut dpi_x, mut dpi_y) = (96u32, 96u32);
+            let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y);
+            let current_dpi = GetDpiForWindow(hwnd).max(1) as f64;
+            let scale = |v: i32| (v as f64 * dpi_x as f64 / current_dpi).round() as i32;
+            let (inset_left, inset_top) = (scale(visible.left - outer.left), scale(visible.top - outer.top));
+            let (width, height) = (scale(visible.right - visible.left), scale(visible.bottom - visible.top));
+
+            let (mut x, mut y) = (pt.x.max(work.left), pt.y.max(work.top));
+            if x + width > work.right {
+                x = (work.right - width).max(work.left);
+            }
+            if y + height > work.bottom {
+                y = (work.bottom - height).max(work.top);
+            }
+
+            let target = (x - inset_left, y - inset_top);
+            if (outer.left, outer.top) == target && dpi_x as f64 == current_dpi {
+                return;
+            }
+            let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+                x: target.0,
+                y: target.1,
+            }));
         }
     }
 }
 
 #[cfg(target_os = "windows")]
-static INTERCEPTOR_APP_HANDLE: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
-
-#[cfg(target_os = "windows")]
-unsafe fn is_control_text_editing(parent_hwnd: windows::Win32::Foundation::HWND) -> bool {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetClassNameW, GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
-    };
-    let thread_id = GetWindowThreadProcessId(parent_hwnd, None);
-    let mut gui_info = GUITHREADINFO {
-        cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
-        ..Default::default()
-    };
-    if GetGUIThreadInfo(thread_id, &mut gui_info).is_ok() {
-        if !gui_info.hwndFocus.0.is_null() {
-            let mut buf = [0u16; 64];
-            let len = GetClassNameW(gui_info.hwndFocus, &mut buf);
-            let class = String::from_utf16_lossy(&buf[..len as usize]).to_lowercase();
-            if class.contains("edit") {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-#[cfg(target_os = "windows")]
-fn get_target_popup_position(popup_width: i32, popup_height: i32) -> (i32, i32) {
-    use windows::Win32::Foundation::POINT;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetCursorPos, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
-    };
-
-    let mut pt = POINT::default();
-    unsafe {
-        if GetCursorPos(&mut pt).is_ok() {
-            let screen_w = GetSystemMetrics(SM_CXSCREEN);
-            let screen_h = GetSystemMetrics(SM_CYSCREEN);
-
-            let mut x = pt.x - (popup_width / 2);
-            let mut y = pt.y - 40;
-
-            if x + popup_width > screen_w - 15 {
-                x = screen_w - popup_width - 15;
-            }
-            if x < 15 {
-                x = 15;
-            }
-            if y + popup_height > screen_h - 40 {
-                y = screen_h - popup_height - 40;
-            }
-            if y < 15 {
-                y = 15;
-            }
-
-            return (x, y);
-        }
-    }
-    (400, 300)
-}
-
-#[cfg(target_os = "windows")]
-fn trigger_explorer_popup(app: AppHandle, sources: Vec<String>, destination: String) {
+fn trigger_explorer_popup(app: AppHandle, sources: Vec<String>, destination: String, anchor: Option<(i32, i32)>) {
     if sources.is_empty() {
         return;
     }
@@ -1081,20 +771,11 @@ fn trigger_explorer_popup(app: AppHandle, sources: Vec<String>, destination: Str
         sources, dest_final
     ));
 
-    let (popup_x, popup_y) = get_target_popup_position(480, 320);
-
     let app_clone = app.clone();
     let _ = app.run_on_main_thread(move || {
         if let Some(window) = app_clone.get_webview_window("main") {
             let _ = window.unmaximize();
-            let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                width: 480.0,
-                height: 320.0,
-            }));
-            let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-                x: popup_x,
-                y: popup_y,
-            }));
+            place_popup_window(&window, anchor);
             let _ = window.set_always_on_top(true);
             let _ = window.unminimize();
             let _ = window.show();
@@ -1131,6 +812,11 @@ fn try_send_args_to_existing_instance(args: &[String]) -> bool {
     }
 
     if let Ok(mut file) = std::fs::OpenOptions::new().write(true).open(pipe_path) {
+        // We were started by Explorer and hold foreground rights; pass them to the primary
+        // instance so it can bring its popup to the front.
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(u32::MAX); // ASFW_ANY
+        }
         if let Ok(json) = serde_json::to_string(args) {
             if writeln!(file, "{}", json).is_ok() && file.flush().is_ok() {
                 return true;
@@ -1265,7 +951,7 @@ fn handle_forwarded_cli_args(app: &AppHandle, state: &Arc<AppState>, args: &[Str
 
     if launch_args.is_popup && !launch_args.sources.is_empty() {
         let dest = launch_args.destination.unwrap_or_default();
-        trigger_explorer_popup(app.clone(), launch_args.sources, dest);
+        trigger_explorer_popup(app.clone(), launch_args.sources, dest, launch_args.popup_anchor);
     } else if launch_args.auto_start && launch_args.destination.is_some() && !launch_args.sources.is_empty() {
         let dest = launch_args.destination.unwrap();
         let on_fin = launch_args.on_finish.unwrap_or_else(|| "do_nothing".to_string());
@@ -1362,272 +1048,6 @@ fn start_ipc_pipe_server(app: AppHandle, state: Arc<AppState>) {
     });
 }
 
-#[cfg(target_os = "windows")]
-struct ExplorerDragState {
-    start_pt: Option<windows::Win32::Foundation::POINT>,
-    source_hwnd: Option<isize>,
-    is_dragging: bool,
-    pending_sources: Vec<String>,
-}
-
-#[cfg(target_os = "windows")]
-static EXPLORER_DRAG_STATE: std::sync::Mutex<ExplorerDragState> = std::sync::Mutex::new(ExplorerDragState {
-    start_pt: None,
-    source_hwnd: None,
-    is_dragging: false,
-    pending_sources: Vec::new(),
-});
-
-#[cfg(target_os = "windows")]
-unsafe extern "system" fn explorer_ll_keyboard_proc(
-    code: i32,
-    wparam: windows::Win32::Foundation::WPARAM,
-    lparam: windows::Win32::Foundation::LPARAM,
-) -> windows::Win32::Foundation::LRESULT {
-    use windows::Win32::Foundation::LRESULT;
-    use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, GetAsyncKeyState, VK_CONTROL, VK_SCROLL};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, GetForegroundWindow, KBDLLHOOKSTRUCT, WM_KEYDOWN,
-    };
-
-    if code >= 0 && wparam.0 as u32 == WM_KEYDOWN {
-        let scroll_lock = (GetKeyState(VK_SCROLL.0 as i32) & 1) != 0;
-        if scroll_lock {
-            return CallNextHookEx(None, code, wparam, lparam);
-        }
-
-        let kbd = *(lparam.0 as *const KBDLLHOOKSTRUCT);
-        // VK_V is 0x56
-        if kbd.vkCode == 0x56 {
-            let ctrl_down = (GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
-            if ctrl_down {
-                let hwnd = GetForegroundWindow();
-                let is_exp = is_explorer_window(hwnd);
-                log_engine(&format!(
-                    "Ctrl+V pressed! Foreground HWND: {:?}, is_explorer: {}",
-                    hwnd, is_exp
-                ));
-                if !hwnd.0.is_null() && is_exp {
-                    let is_text_editing = is_control_text_editing(hwnd);
-                    log_engine(&format!(
-                        "Ctrl+V in Explorer detected! HWND: {:?}, is_text_editing: {}",
-                        hwnd, is_text_editing
-                    ));
-                    if !is_text_editing {
-                        let sources = get_clipboard_hdrop_files();
-                        if !sources.is_empty() {
-                            log_engine(&format!(
-                                "Ctrl+V in Explorer intercepted! Sources count: {}",
-                                sources.len()
-                            ));
-                                let hwnd_raw = hwnd.0 as isize;
-                                if let Some(app) = INTERCEPTOR_APP_HANDLE.get().cloned() {
-                                    std::thread::spawn(move || {
-                                        let _ = windows::Win32::System::Com::CoInitializeEx(
-                                            None,
-                                            windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
-                                        );
-                                        let target_dir = get_explorer_window_path(windows::Win32::Foundation::HWND(hwnd_raw as *mut _));
-                                        let target_dest = target_dir.unwrap_or_else(|| {
-                                            std::env::var("USERPROFILE").ok().map(|p| PathBuf::from(p).join("Desktop").to_string_lossy().to_string()).unwrap_or_default()
-                                        });
-                                        trigger_explorer_popup(app, sources, target_dest);
-                                    });
-                                }
-                                return LRESULT(1); // Suppress Windows Explorer's native copy!
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    CallNextHookEx(None, code, wparam, lparam)
-}
-
-#[cfg(target_os = "windows")]
-unsafe extern "system" fn explorer_ll_mouse_proc(
-    code: i32,
-    wparam: windows::Win32::Foundation::WPARAM,
-    lparam: windows::Win32::Foundation::LPARAM,
-) -> windows::Win32::Foundation::LRESULT {
-    use windows::Win32::Foundation::{HWND, LRESULT};
-    use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, keybd_event, KEYEVENTF_KEYUP, VK_ESCAPE, VK_SCROLL};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, WindowFromPoint, MSLLHOOKSTRUCT,
-        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-    };
-
-    if code >= 0 {
-        let msg = wparam.0 as u32;
-        let ms = *(lparam.0 as *const MSLLHOOKSTRUCT);
-        let pt = ms.pt;
-
-        let scroll_lock = (GetKeyState(VK_SCROLL.0 as i32) & 1) != 0;
-        if scroll_lock {
-            if let Ok(mut state) = EXPLORER_DRAG_STATE.lock() {
-                state.start_pt = None;
-                state.source_hwnd = None;
-                state.is_dragging = false;
-                state.pending_sources.clear();
-            }
-            return CallNextHookEx(None, code, wparam, lparam);
-        }
-
-        if msg == WM_LBUTTONDOWN {
-            let hwnd_under = WindowFromPoint(pt);
-            if !hwnd_under.0.is_null() && is_explorer_window(hwnd_under) {
-                if let Ok(mut state) = EXPLORER_DRAG_STATE.lock() {
-                    state.start_pt = Some(pt);
-                    state.source_hwnd = Some(hwnd_under.0 as isize);
-                    state.is_dragging = false;
-                    state.pending_sources.clear();
-                }
-            } else if let Ok(mut state) = EXPLORER_DRAG_STATE.lock() {
-                state.start_pt = None;
-                state.source_hwnd = None;
-                state.is_dragging = false;
-                state.pending_sources.clear();
-            }
-        } else if msg == WM_MOUSEMOVE {
-            let mut need_cache_hwnd = None;
-            if let Ok(mut state) = EXPLORER_DRAG_STATE.lock() {
-                if let Some(start) = state.start_pt {
-                    let dx = (pt.x - start.x).abs();
-                    let dy = (pt.y - start.y).abs();
-                    if dx > 8 || dy > 8 {
-                        state.is_dragging = true;
-                        if state.pending_sources.is_empty() {
-                            need_cache_hwnd = state.source_hwnd;
-                        }
-                    }
-                }
-            }
-            if let Some(h) = need_cache_hwnd {
-                // Pre-fetch selected items while the source Explorer window is still focused with active selection!
-                let files = get_explorer_selected_files(HWND(h as *mut _));
-                if !files.is_empty() {
-                    if let Ok(mut state) = EXPLORER_DRAG_STATE.lock() {
-                        state.pending_sources = files;
-                    }
-                }
-            }
-        } else if msg == WM_LBUTTONUP {
-            let mut was_dragging = false;
-            let mut src_hwnd = None;
-            let mut cached_sources = Vec::new();
-            if let Ok(mut state) = EXPLORER_DRAG_STATE.lock() {
-                if state.is_dragging {
-                    was_dragging = true;
-                    src_hwnd = state.source_hwnd;
-                    cached_sources = state.pending_sources.clone();
-                }
-                state.start_pt = None;
-                state.source_hwnd = None;
-                state.is_dragging = false;
-                state.pending_sources.clear();
-            }
-
-            if was_dragging {
-                let drop_hwnd = WindowFromPoint(pt);
-                if !drop_hwnd.0.is_null() && is_explorer_window(drop_hwnd) {
-                    // Send VK_ESCAPE immediately to cancel Explorer's native drop
-                    keybd_event(VK_ESCAPE.0 as u8, 0, Default::default(), 0);
-                    keybd_event(VK_ESCAPE.0 as u8, 0, KEYEVENTF_KEYUP, 0);
-
-                    let drop_raw = drop_hwnd.0 as isize;
-                    if let Some(app) = INTERCEPTOR_APP_HANDLE.get().cloned() {
-                        std::thread::spawn(move || {
-                            let _ = windows::Win32::System::Com::CoInitializeEx(
-                                None,
-                                windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
-                            );
-                            let target_dest = get_explorer_window_path(HWND(drop_raw as *mut _))
-                                .unwrap_or_else(|| {
-                                    std::env::var("USERPROFILE").ok().map(|p| PathBuf::from(p).join("Desktop").to_string_lossy().to_string()).unwrap_or_default()
-                                });
-                            let mut sources = cached_sources;
-                            if sources.is_empty() {
-                                if let Some(h) = src_hwnd {
-                                    sources = get_explorer_selected_files(HWND(h as *mut _));
-                                }
-                            }
-                            if sources.is_empty() {
-                                sources = get_clipboard_hdrop_files();
-                            }
-                            log_engine(&format!(
-                                "Async drag drop resolution: target={:?}, sources={:?}",
-                                target_dest, sources
-                            ));
-                            if !sources.is_empty() {
-                                trigger_explorer_popup(app, sources, target_dest);
-                            }
-                        });
-                    }
-                    return LRESULT(1);
-                }
-            }
-        }
-    }
-
-    CallNextHookEx(None, code, wparam, lparam)
-}
-
-#[cfg(target_os = "windows")]
-fn start_explorer_interceptor(app: AppHandle) {
-    let _ = INTERCEPTOR_APP_HANDLE.set(app);
-    std::thread::spawn(|| {
-        use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
-        use windows::Win32::UI::WindowsAndMessaging::{
-            DispatchMessageW, GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
-            MSG, WH_KEYBOARD_LL, WH_MOUSE_LL,
-        };
-
-        unsafe {
-            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-
-            let kbd_hook = match SetWindowsHookExW(
-                WH_KEYBOARD_LL,
-                Some(explorer_ll_keyboard_proc),
-                windows::Win32::Foundation::HINSTANCE::default(),
-                0,
-            ) {
-                Ok(h) => h,
-                Err(e) => {
-                    log_engine(&format!("Failed to set WH_KEYBOARD_LL hook: {:?}", e));
-                    CoUninitialize();
-                    return;
-                }
-            };
-
-            let mouse_hook = match SetWindowsHookExW(
-                WH_MOUSE_LL,
-                Some(explorer_ll_mouse_proc),
-                windows::Win32::Foundation::HINSTANCE::default(),
-                0,
-            ) {
-                Ok(h) => h,
-                Err(e) => {
-                    log_engine(&format!("Failed to set WH_MOUSE_LL hook: {:?}", e));
-                    let _ = UnhookWindowsHookEx(kbd_hook);
-                    CoUninitialize();
-                    return;
-                }
-            };
-
-            log_engine("Explorer keyboard & mouse interceptor hooks registered successfully with COM apartment");
-
-            let mut msg = MSG::default();
-            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                let _ = DispatchMessageW(&msg);
-            }
-
-            let _ = UnhookWindowsHookEx(mouse_hook);
-            let _ = UnhookWindowsHookEx(kbd_hook);
-            CoUninitialize();
-        }
-    });
-}
-
 #[tauri::command]
 fn explorer_copy(sources: Vec<String>, destination: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
@@ -1679,8 +1099,41 @@ fn explorer_copy(sources: Vec<String>, destination: String) -> Result<(), String
 }
 
 #[tauri::command]
+async fn app_ready_to_show(window: tauri::WebviewWindow, state: State<'_, AppState>) -> Result<(), String> {
+    log_engine("app_ready_to_show invoked from frontend");
+    let (is_popup, auto_start, anchor) = {
+        let guard = state.transfer_state.lock().await;
+        (guard.launch_args.is_popup, guard.launch_args.auto_start, guard.launch_args.popup_anchor)
+    };
+
+    // Size, place and show on the main thread so the popup is measured after resizing.
+    let win = window.clone();
+    window
+        .run_on_main_thread(move || {
+            if is_popup {
+                #[cfg(target_os = "windows")]
+                place_popup_window(&win, anchor);
+                let _ = win.set_always_on_top(true);
+            } else if auto_start {
+                let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                    width: 580.0,
+                    height: 190.0,
+                }));
+            }
+
+            let _ = win.show();
+            let _ = win.unminimize();
+            let _ = win.set_focus();
+            #[cfg(target_os = "windows")]
+            force_window_to_foreground(&win);
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 async fn close_app(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    log_engine("close_app command invoked: hiding main window to system tray");
+    log_engine("close_app command invoked: exiting application cleanly");
     state.cancel_flag.store(true, Ordering::SeqCst);
 
     // Unblock any conflict sender so waiting threads can proceed
@@ -1697,26 +1150,21 @@ async fn close_app(app: AppHandle, state: State<'_, AppState>) -> Result<(), Str
         let _ = window.hide();
     }
 
-    // If transfer worker is active, give it up to 1.5s to exit coordinator,
+    // If transfer worker is active, give it up to 1s to exit coordinator,
     // clean partial file, and finalize SQLite history records
     let start = std::time::Instant::now();
-    while state.is_worker_running.load(Ordering::SeqCst) && start.elapsed() < std::time::Duration::from_millis(1500) {
+    while state.is_worker_running.load(Ordering::SeqCst) && start.elapsed() < std::time::Duration::from_millis(1000) {
         tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
     }
 
     // Safety fallback: ensure any remaining partial files are deleted
     cleanup_partial_transfers(&state).await;
 
-    // Reset transfer state to idle so subsequent popups start clean
-    {
-        let mut cur = state.transfer_state.lock().await;
-        cur.status = "idle".to_string();
-        cur.files.clear();
-        cur.stats = TransferStats::default();
-        cur.active_conflict = None;
-    }
+    // Apply any staged silent update on exit
+    #[cfg(target_os = "windows")]
+    apply_silent_update_on_exit();
 
-    Ok(())
+    std::process::exit(0);
 }
 
 #[tauri::command]
@@ -1864,20 +1312,7 @@ fn run_reg(args: &[&str]) -> Result<(), String> {
 }
 
 fn get_context_menu_exe_path() -> Result<PathBuf, String> {
-    let current = std::env::current_exe().map_err(|e| format!("Yürütülebilir dosya yolu alınamadı: {}", e))?;
-    if let Some(parent) = current.parent() {
-        let sibling = parent.join("DeepNodeCopy.exe");
-        if sibling.exists() {
-            return Ok(sibling);
-        }
-        if let Some(grandparent) = parent.parent() {
-            let bin_sibling = grandparent.join("bin").join("DeepNodeCopy.exe");
-            if bin_sibling.exists() {
-                return Ok(bin_sibling);
-            }
-        }
-    }
-    Ok(current)
+    std::env::current_exe().map_err(|e| format!("Yürütülebilir dosya yolu alınamadı: {}", e))
 }
 
 #[tauri::command]
@@ -2016,17 +1451,21 @@ async fn register_shell_context_menu(_app: AppHandle, lang: Option<String>) -> R
     // 5. Default Copy & Move Interception Handlers (CopyHook & DragDrop)
     let clsid_dd = "{6E8F3C72-A2D9-4E61-8C9B-93E48F1A7C21}";
     let clsid_ch = "{8F3A2C71-9B4E-4D26-A5F0-6E1D2B7C9A83}";
-    for target in &["*", "Directory", "Folder", "Drive"] {
+    // Explorer runs the DragDropHandlers chain for every drop and paste onto these keys
+    // (same set as TeraCopy); the handler makes its item the default to take over the transfer.
+    for target in &["Directory", "Folder", "Drive", "lnkfile"] {
         let _ = run_reg(&["add", &format!("HKCU\\Software\\Classes\\{}\\shellex\\DragDropHandlers\\DeepNodeCopy", target), "/ve", "/d", clsid_dd, "/f"]);
     }
+    let _ = run_reg(&["delete", "HKCU\\Software\\Classes\\*\\shellex\\DragDropHandlers\\DeepNodeCopy", "/f"]);
     for target in &["Directory", "Folder"] {
         let _ = run_reg(&["add", &format!("HKCU\\Software\\Classes\\{}\\shellex\\CopyHookHandlers\\DeepNodeCopy", target), "/ve", "/d", clsid_ch, "/f"]);
     }
 
-    // DropHandler for Left-Click and OLE drag & drop on folders and directories
+    // Older builds replaced Explorer's own folder DropHandler with ours, which bypasses the
+    // DragDropHandlers chain. The DLL's DllRegisterServer (regsvr32 below) resets the
+    // DropHandler value where it still points at our CLSID.
     for target in &["Directory", "Folder", "Directory\\Background", "Drive"] {
-        let _ = run_reg(&["add", &format!("HKCU\\Software\\Classes\\{}\\shellex\\DropHandler\\DeepNodeCopy", target), "/ve", "/d", clsid_dd, "/f"]);
-        let _ = run_reg(&["add", &format!("HKCU\\Software\\Classes\\{}\\shellex\\DropHandler", target), "/ve", "/d", clsid_dd, "/f"]);
+        let _ = run_reg(&["delete", &format!("HKCU\\Software\\Classes\\{}\\shellex\\DropHandler\\DeepNodeCopy", target), "/f"]);
     }
 
     // Autostart in silent background mode
@@ -2102,7 +1541,7 @@ async fn unregister_shell_context_menu(lang: Option<String>) -> Result<String, S
         let _ = run_reg(&["delete", "HKCU\\Software\\Classes\\Drive\\shell\\DeepNodeCopy", "/f"]);
         let _ = run_reg(&["delete", "HKCU\\Software\\Classes\\Drive\\shell\\DeepNodeMove", "/f"]);
 
-        for target in &["*", "Directory", "Folder", "Drive"] {
+        for target in &["*", "Directory", "Folder", "Drive", "lnkfile"] {
             let _ = run_reg(&["delete", &format!("HKCU\\Software\\Classes\\{}\\shellex\\DragDropHandlers\\DeepNodeCopy", target), "/f"]);
         }
         for target in &["Directory", "Folder"] {
@@ -4323,14 +3762,11 @@ fn check_single_instance(raw_args: &[String]) -> bool {
                     }
                     log_engine("Application started in silent background mode. Main window hidden.");
                 } else {
-                    for (_label, win) in &windows {
-                        let _ = win.unminimize();
-                        let _ = win.show();
-                        let _ = win.set_focus();
-                        #[cfg(target_os = "windows")]
-                        force_window_to_foreground(win);
-                    }
-                    log_engine("Application started in GUI mode. Main window shown and focused.");
+                    // The window stays hidden (visible: false) until the frontend has rendered and
+                    // calls app_ready_to_show. Showing/foregrounding it here, before WebView2 exists,
+                    // attached our input queue to Explorer's busy drop/paste thread and left the
+                    // webview uncreated (a black window) for popups launched by the shell extension.
+                    log_engine("Application started in GUI mode. Main window will be shown when the frontend is ready.");
                 }
 
                 // If auto_start is true, trigger transfer immediately in native Rust
@@ -4361,16 +3797,23 @@ fn check_single_instance(raw_args: &[String]) -> bool {
                     );
                 }
 
-                if launch_args_for_setup.is_popup
-                    && !launch_args_for_setup.sources.is_empty()
-                {
-                    let dest = launch_args_for_setup.destination.clone().unwrap_or_default();
-                    let sources = launch_args_for_setup.sources.clone();
-                    let app_h = app.handle().clone();
-                    tauri::async_runtime::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                        trigger_explorer_popup(app_h, sources, dest);
-                    });
+                if let Some(win) = app.get_webview_window("main") {
+                    if launch_args_for_setup.is_popup {
+                        #[cfg(target_os = "windows")]
+                        place_popup_window(&win, launch_args_for_setup.popup_anchor);
+                        let _ = win.set_always_on_top(true);
+                    } else if launch_args_for_setup.auto_start {
+                        let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                            width: 580.0,
+                            height: 190.0,
+                        }));
+                    } else {
+                        let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                            width: 960.0,
+                            height: 640.0,
+                        }));
+                        let _ = win.center();
+                    }
                 }
 
                 let silent_app = app.handle().clone();
@@ -4379,101 +3822,23 @@ fn check_single_instance(raw_args: &[String]) -> bool {
                     run_silent_update_background_service(silent_app, silent_state).await;
                 });
 
-                // Initialize System Tray Icon safely
-                let tray_res = (|| -> Result<(), Box<dyn std::error::Error>> {
-                    let show_i = MenuItem::with_id(app, "show", "DeepNode Copy", true, None::<&str>)?;
-                    let quit_i = MenuItem::with_id(app, "quit", "Çıkış", true, None::<&str>)?;
-                    let tray_menu = Menu::with_items(app, &[&show_i, &quit_i])?;
-
-                    let icon = if let Some(i) = app.default_window_icon() {
-                        i.clone()
-                    } else {
-                        tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))?
-                    };
-
-                    let _tray = TrayIconBuilder::with_id("deepnode-copy-tray")
-                        .icon(icon)
-                        .tooltip("DeepNode Copy")
-                        .menu(&tray_menu)
-                        .show_menu_on_left_click(false)
-                        .on_menu_event(|app, event| {
-                            match event.id.as_ref() {
-                                "show" => {
-                                    if let Some(win) = app.get_webview_window("main") {
-                                        let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                                            width: 960.0,
-                                            height: 640.0,
-                                        }));
-                                        let _ = win.show();
-                                        let _ = win.unminimize();
-                                        #[cfg(target_os = "windows")]
-                                        force_window_to_foreground(&win);
-                                        let _ = app.emit("restore_main_ui", ());
-                                    }
-                                }
-                                "quit" => {
-                                    log_engine("Tray menu 'quit' clicked: exiting application");
-                                    #[cfg(target_os = "windows")]
-                                    apply_silent_update_on_exit();
-                                    std::process::exit(0);
-                                }
-                                _ => {}
-                            }
-                        })
-                        .on_tray_icon_event(|tray, event| {
-                            if let TrayIconEvent::Click {
-                                button: tauri::tray::MouseButton::Left,
-                                button_state: tauri::tray::MouseButtonState::Up,
-                                ..
-                            } = event
-                            {
-                                let app = tray.app_handle();
-                                if let Some(win) = app.get_webview_window("main") {
-                                    let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                                        width: 960.0,
-                                        height: 640.0,
-                                    }));
-                                    let _ = win.show();
-                                    let _ = win.unminimize();
-                                    #[cfg(target_os = "windows")]
-                                    force_window_to_foreground(&win);
-                                    let _ = app.emit("restore_main_ui", ());
-                                }
-                            }
-                        })
-                        .build(app)?;
-
-                    log_engine("System tray icon initialized successfully");
-                    Ok(())
-                })();
-
-                if let Err(e) = tray_res {
-                    log_engine(&format!("System tray initialization warning: {:?}", e));
-                }
-
-                #[cfg(target_os = "windows")]
-                start_explorer_interceptor(app.handle().clone());
-
                 #[cfg(target_os = "windows")]
                 start_ipc_pipe_server(app.handle().clone(), Arc::clone(&state_for_setup));
 
                 Ok(())
             })
             .on_window_event(|window, event| {
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if let tauri::WindowEvent::CloseRequested { api: _, .. } = event {
+                    log_engine("CloseRequested: exiting application cleanly.");
                     let state: State<AppState> = window.state();
-                    if state.is_worker_running.load(Ordering::SeqCst) {
-                        log_engine("CloseRequested while transfer running: keeping window hidden in tray while transfer proceeds");
-                        api.prevent_close();
-                        let _ = window.hide();
-                    } else {
-                        log_engine("CloseRequested: hiding window to system tray. Background interceptor remains active.");
-                        api.prevent_close();
-                        let _ = window.hide();
-                    }
+                    state.cancel_flag.store(true, Ordering::SeqCst);
+                    #[cfg(target_os = "windows")]
+                    apply_silent_update_on_exit();
+                    std::process::exit(0);
                 }
             })
             .invoke_handler(tauri::generate_handler![
+                app_ready_to_show,
                 close_app,
                 start_transfer,
                 pause_transfer,
@@ -4524,9 +3889,8 @@ fn check_single_instance(raw_args: &[String]) -> bool {
             .build(tauri::generate_context!())
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?
             .run(|_app_handle, event| {
-                if let tauri::RunEvent::ExitRequested { api, .. } = event {
-                    log_engine("RunEvent::ExitRequested: preventing exit to keep system tray and Explorer interceptor hooks alive");
-                    api.prevent_exit();
+                if let tauri::RunEvent::ExitRequested { .. } = event {
+                    log_engine("RunEvent::ExitRequested: process exiting");
                 }
             });
         Ok::<(), Box<dyn std::error::Error>>(())

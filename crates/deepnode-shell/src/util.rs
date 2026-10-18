@@ -80,9 +80,11 @@ fn query_reg_path(root: HKEY, subkey: &str, value_name: &str) -> Option<PathBuf>
 
 /// Dynamically discovers the executable path of DeepNodeCopy.exe without any hardcoded developer paths.
 pub fn get_exe_path() -> PathBuf {
+    const EXE_NAMES: &[&str] = &["deepnode-gui.exe", "DeepNode Copy.exe", "DeepNodeCopy.exe"];
+
     // 1. Check relative to deepnode_shell.dll location
     if let Some(dll_dir) = get_dll_dir() {
-        for name in &["DeepNodeCopy.exe", "deepnode-gui.exe"] {
+        for name in EXE_NAMES {
             let candidate = dll_dir.join(name);
             if candidate.is_file() {
                 return candidate;
@@ -100,7 +102,7 @@ pub fn get_exe_path() -> PathBuf {
 
     // 2. Windows App Paths registry keys
     for root in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
-        for exe_name in &["deepnode-gui.exe", "DeepNodeCopy.exe"] {
+        for exe_name in EXE_NAMES {
             let app_path_key = format!(r"Software\Microsoft\Windows\CurrentVersion\App Paths\{}", exe_name);
             if let Some(p) = query_reg_path(root, &app_path_key, "") {
                 if p.is_file() {
@@ -109,7 +111,7 @@ pub fn get_exe_path() -> PathBuf {
             }
         }
         if let Some(dir) = query_reg_path(root, r"Software\DeepNode\DeepNode Copy", "InstallPath") {
-            for name in &["deepnode-gui.exe", "DeepNodeCopy.exe"] {
+            for name in EXE_NAMES {
                 let candidate = dir.join(name);
                 if candidate.is_file() {
                     return candidate;
@@ -127,7 +129,7 @@ pub fn get_exe_path() -> PathBuf {
     ];
 
     for dir_opt in candidate_dirs.into_iter().flatten() {
-        for name in &["deepnode-gui.exe", "DeepNodeCopy.exe"] {
+        for name in EXE_NAMES {
             let p = dir_opt.join(name);
             if p.is_file() {
                 return p;

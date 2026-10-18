@@ -29,6 +29,7 @@ export const App: React.FC = () => {
   const [verifyModalOpen, setVerifyModalOpen] = useState(false);
   const [aboutModalOpen, setAboutModalOpen] = useState(false);
   const [copyPasteModalOpen, setCopyPasteModalOpen] = useState(false);
+  const [isInitialized, setIsInitialized] = useState(false);
   const [activeConflict, setActiveConflict] = useState<ConflictInfo | null>(null);
   const [isContextMenuRegistered, setIsContextMenuRegistered] = useState<boolean>(false);
   const [lang, setLangState] = useState<Language>(() => {
@@ -329,10 +330,12 @@ export const App: React.FC = () => {
                 message: `Transfer completed: ${data.payload.completed_files}/${data.payload.total_files} files (${data.payload.transferred_bytes} bytes)`,
                 level: "info",
               });
-              if (onFinishAction === "close_app") {
-                setTimeout(() => {
-                  handleCloseApp();
-                }, 2000);
+              if (isCompact || onFinishAction === "close_app") {
+                if (data.payload.failed_files === 0) {
+                  setTimeout(() => {
+                    handleCloseApp();
+                  }, 1200);
+                }
               }
               break;
 
@@ -505,6 +508,8 @@ export const App: React.FC = () => {
           if (curState.active_conflict) {
             setActiveConflict(curState.active_conflict);
           }
+          setIsInitialized(true);
+          invoke("app_ready_to_show").catch(() => {});
           return;
         }
 
@@ -517,6 +522,7 @@ export const App: React.FC = () => {
           }
           if (args.is_popup) {
             setCopyPasteModalOpen(true);
+            setIsCompact(false);
           } else if (args.auto_start && args.destination) {
             if (isStartingTransferRef.current) return;
             isStartingTransferRef.current = true;
@@ -574,6 +580,9 @@ export const App: React.FC = () => {
           .catch(() => {});
       } catch (err) {
         console.error("Error reading launch args:", err);
+      } finally {
+        setIsInitialized(true);
+        invoke("app_ready_to_show").catch(() => {});
       }
     };
 
@@ -968,6 +977,10 @@ export const App: React.FC = () => {
       }
     }
   };
+
+  if (!isInitialized) {
+    return <main className="w-screen h-screen bg-[#070a12] select-none" />;
+  }
 
   return (
     <main data-tauri-drag-region={copyPasteModalOpen ? "false" : "deep"} className="w-screen h-screen overflow-hidden bg-[#070a12] text-neutral-100 flex flex-col font-sans select-none">

@@ -1,13 +1,14 @@
 {
   "name": "deepnode-copy-ui",
   "private": true,
-  "version": "0.2.8",
+  "version": "0.2.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "tauri": "tauri",
     "build:app": "npx tauri build --no-bundle",
+    "build:signed": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_signed.ps1",
     "preview": "vite preview"
   },
   "dependencies": {

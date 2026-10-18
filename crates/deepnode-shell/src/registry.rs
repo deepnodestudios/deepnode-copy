@@ -1,8 +1,8 @@
 use windows::core::{HRESULT, PCWSTR};
 use windows::Win32::Foundation::{E_FAIL, S_OK};
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegDeleteKeyW, RegDeleteTreeW, RegSetValueExW,
-    HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ,
+    RegCloseKey, RegCreateKeyExW, RegDeleteKeyW, RegDeleteTreeW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+    HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ,
 };
 use crate::util::get_dll_path;
 
@@ -80,6 +80,48 @@ fn set_key_named_value(root: HKEY, subkey: &str, name: &str, value: &str) -> boo
     }
 }
 
+/// Keys whose `shellex\DragDropHandlers` list our handler (the same set TeraCopy registers).
+/// Explorer consults these for every drop and paste onto a folder, drive or folder shortcut.
+const DRAGDROP_TARGETS: &[&str] = &["Folder", "Directory", "Drive", "lnkfile"];
+/// Registered by older builds; removed on (re)registration.
+const LEGACY_DRAGDROP_TARGETS: &[&str] = &["*", r"Directory\Background", r"Drive\Background", "DesktopBackground"];
+/// Older builds replaced Explorer's own `shellex\DropHandler` on these keys with our CLSID.
+const LEGACY_DROPHANDLER_TARGETS: &[&str] = &["Directory", "Folder", r"Directory\Background", "Drive"];
+
+fn query_key_default_value(root: HKEY, subkey: &str) -> Option<String> {
+    unsafe {
+        let subkey_w: Vec<u16> = subkey.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut hkey = HKEY::default();
+        if RegOpenKeyExW(root, PCWSTR(subkey_w.as_ptr()), 0, KEY_READ, &mut hkey).is_err() {
+            return None;
+        }
+        let mut buf = [0u16; 256];
+        let mut len = (buf.len() * 2) as u32;
+        let res = RegQueryValueExW(hkey, PCWSTR::null(), None, None, Some(buf.as_mut_ptr() as *mut u8), Some(&mut len));
+        let _ = RegCloseKey(hkey);
+        if res.is_err() {
+            return None;
+        }
+        let chars = (len as usize / 2).min(buf.len());
+        Some(String::from_utf16_lossy(&buf[..chars]).trim_end_matches('\0').to_string())
+    }
+}
+
+/// Removes `shellex\DropHandler` entries that point at our CLSID, restoring Explorer's own drop
+/// target (which is what runs the DragDropHandlers chain). Values owned by others are kept.
+fn remove_legacy_drop_handlers(root: HKEY, prefix: &str) {
+    for target in LEGACY_DROPHANDLER_TARGETS {
+        let dh_key = format!(r"{}{}\shellex\DropHandler", prefix, target);
+        delete_key_tree(root, &format!(r"{}\DeepNodeCopy", dh_key));
+        let ours = query_key_default_value(root, &dh_key)
+            .map(|v| v.eq_ignore_ascii_case(CLSID_DRAGDROP_STR))
+            .unwrap_or(false);
+        if ours {
+            delete_key_tree(root, &dh_key);
+        }
+    }
+}
+
 fn delete_key_tree(root: HKEY, subkey: &str) {
     unsafe {
         let subkey_w: Vec<u16> = subkey.encode_utf16().chain(std::iter::once(0)).collect();
@@ -125,10 +167,14 @@ pub fn register_server() -> HRESULT {
             set_key_default_value(root, &inproc_ch_key, &dll_path);
             set_key_named_value(root, &inproc_ch_key, "ThreadingModel", "Apartment");
 
-            // 4. Register DragDropHandlers (for items, folders, background, and desktop)
-            for target in &["*", "Directory", "Folder", "Directory\\Background", "Drive", "Drive\\Background", "DesktopBackground"] {
+            // 4. Register DragDropHandlers
+            for target in DRAGDROP_TARGETS {
                 let dd_key = format!(r"{}{}\shellex\DragDropHandlers\DeepNodeCopy", prefix, target);
                 set_key_default_value(root, &dd_key, CLSID_DRAGDROP_STR);
+            }
+            for target in LEGACY_DRAGDROP_TARGETS {
+                let dd_key = format!(r"{}{}\shellex\DragDropHandlers\DeepNodeCopy", prefix, target);
+                delete_key_tree(root, &dd_key);
             }
 
             // 5. Register CopyHookHandlers
@@ -143,14 +189,9 @@ pub fn register_server() -> HRESULT {
                 set_key_default_value(root, &cm_key, CLSID_COMMAND_STR);
             }
 
-            // 7. Register DropHandler (Left-click and native OLE drag & drop on folders and directories)
-            for target in &["Directory", "Folder", "Directory\\Background", "Drive"] {
-                let dh_key = format!(r"{}{}\shellex\DropHandler\DeepNodeCopy", prefix, target);
-                set_key_default_value(root, &dh_key, CLSID_DRAGDROP_STR);
-
-                let dh_def = format!(r"{}{}\shellex\DropHandler", prefix, target);
-                set_key_default_value(root, &dh_def, CLSID_DRAGDROP_STR);
-            }
+            // 7. Undo the DropHandler override of older builds: it replaced Explorer's folder drop
+            //    target, so the DragDropHandlers chain (and our default item) never ran.
+            remove_legacy_drop_handlers(root, prefix);
 
             // 8. Register in Shell Extensions Approved
             let approved_path = r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved";
@@ -187,7 +228,7 @@ pub fn unregister_server() -> HRESULT {
 
     for (root, prefix) in roots {
         // 1. Delete DragDropHandlers
-        for target in &["*", "Directory", "Folder", "Directory\\Background", "Drive", "Drive\\Background", "DesktopBackground"] {
+        for target in DRAGDROP_TARGETS.iter().chain(LEGACY_DRAGDROP_TARGETS) {
             let dd_key = format!(r"{}{}\shellex\DragDropHandlers\DeepNodeCopy", prefix, target);
             delete_key_tree(root, &dd_key);
         }
@@ -204,11 +245,8 @@ pub fn unregister_server() -> HRESULT {
             delete_key_tree(root, &cm_key);
         }
 
-        // 4. Delete DropHandlers
-        for target in &["Directory", "Folder", "Directory\\Background", "Drive"] {
-            let dh_key = format!(r"{}{}\shellex\DropHandler\DeepNodeCopy", prefix, target);
-            delete_key_tree(root, &dh_key);
-        }
+        // 4. Delete DropHandlers left by older builds
+        remove_legacy_drop_handlers(root, prefix);
 
         // 4. Delete CLSIDs
         let clsid_cmd_key = format!("{}CLSID\\{}", prefix, CLSID_COMMAND_STR);

@@ -87,6 +87,12 @@ $filesToSign = @(
     (Join-Path $projectRoot "bin\DeepNodeCopy.msix")
 )
 
+# Also sign any installer bundles found in target\release\bundle
+$bundleFiles = Get-ChildItem (Join-Path $projectRoot "target\release\bundle") -Recurse -Include "*.exe", "*.msi" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+if ($bundleFiles) {
+    $filesToSign += $bundleFiles
+}
+
 Write-Host "`n>>> Dosyalar imzalanıyor..." -ForegroundColor Cyan
 
 $signedCount = 0
