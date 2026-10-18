@@ -2,8 +2,13 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use windows_core::{implement, Interface, GUID, PSTR, PWSTR};
 use windows::Win32::Foundation::BOOL;
-use windows::Win32::System::Com::{IDataObject, FORMATETC, TYMED_HGLOBAL};
-use windows::Win32::System::Ole::ReleaseStgMedium;
+use windows::Win32::System::Com::{
+    IDataObject, FORMATETC, TYMED_HGLOBAL, IPersist, IPersist_Impl, IPersistFile, IPersistFile_Impl, STGM,
+};
+use windows::Win32::System::Ole::{
+    ReleaseStgMedium, IDropTarget, IDropTarget_Impl, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_MOVE, DROPEFFECT_NONE,
+};
+use windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
 use windows::Win32::System::Registry::HKEY;
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
@@ -25,7 +30,7 @@ const CMD_REPLACE_OLDER: u32 = 1;
 const CMD_MOVE: u32 = 2;
 const CMD_EXPLORER: u32 = 3;
 
-#[implement(IShellExtInit, IContextMenu)]
+#[implement(IShellExtInit, IContextMenu, IPersist, IPersistFile, IDropTarget)]
 pub struct DeepNodeDragDropHandler {
     target_folder: Mutex<Option<PathBuf>>,
     source_files: Mutex<Vec<PathBuf>>,
@@ -138,6 +143,10 @@ impl IShellExtInit_Impl for DeepNodeDragDropHandler_Impl {
                 }
             }
 
+            let tgt = self.target_folder.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let srcs = self.source_files.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            crate::util::log_shell(&format!("IShellExtInit::Initialize: target={:?}, sources={:?}", tgt, srcs));
+
             Ok(())
         }))
         .unwrap_or_else(|_| Err(windows_core::Error::from(windows::Win32::Foundation::E_FAIL)))
@@ -151,12 +160,28 @@ impl IContextMenu_Impl for DeepNodeDragDropHandler_Impl {
         index_menu: u32,
         id_cmd_first: u32,
         _id_cmd_last: u32,
-        _u_flags: u32,
+        u_flags: u32,
     ) -> Result<(), windows_core::Error> {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // Scroll Lock Check via CopyHookHandler: If active, don't show custom menu, fallback to standard Windows
             if !CopyHookHandler::should_intercept_operation() {
                 return Ok(());
+            }
+
+            let tgt = self.target_folder.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let srcs = self.source_files.lock().unwrap_or_else(|e| e.into_inner()).clone();
+
+            crate::util::log_shell(&format!(
+                "IContextMenu::QueryContextMenu called by Explorer: u_flags=0x{:X}, target={:?}, sources_count={}",
+                u_flags, tgt, srcs.len()
+            ));
+
+            let has_valid_transfer = tgt.as_ref().map(|p| !p.as_os_str().is_empty()).unwrap_or(false) && !srcs.is_empty();
+
+            if has_valid_transfer {
+                let target_path = tgt.as_ref().unwrap();
+                crate::util::log_shell("QueryContextMenu: drop transfer detected, spawning DeepNode Copy popup modal");
+                spawn_deepnode_copy_popup(&srcs, target_path);
             }
 
             let items = [
@@ -185,7 +210,17 @@ impl IContextMenu_Impl for DeepNodeDragDropHandler_Impl {
                 }
             }
 
-            Ok(())
+            // Set our command as the default menu item
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::SetMenuDefaultItem(
+                    hmenu,
+                    id_cmd_first + CMD_COPY,
+                    0,
+                );
+            }
+
+            // Return command count 4 as HRESULT to tell Explorer 4 commands were added
+            Err(windows_core::Error::from_hresult(windows_core::HRESULT(4)))
         }))
         .unwrap_or_else(|_| Err(windows_core::Error::from(windows::Win32::Foundation::E_FAIL)))
     }
@@ -197,6 +232,7 @@ impl IContextMenu_Impl for DeepNodeDragDropHandler_Impl {
             }
 
             let cmd_offset = unsafe { (*pici).lpVerb.0 as usize };
+            crate::util::log_shell(&format!("IContextMenu::InvokeCommand: cmd_offset={}", cmd_offset));
             if cmd_offset > 3 {
                 return Ok(());
             }
@@ -301,9 +337,9 @@ impl IContextMenu_Impl for DeepNodeDragDropHandler_Impl {
 
             match cmd_offset as u32 {
                 CMD_COPY => {
-                    cmd.arg("copy")
-                        .arg(format!("*{}", list_file.display()))
-                        .arg(&target_str);
+                    let _ = std::fs::remove_file(&list_file);
+                    spawn_deepnode_copy_popup(&sources, &target_path);
+                    return Ok(());
                 }
                 CMD_REPLACE_OLDER => {
                     cmd.arg("copy")
@@ -357,6 +393,227 @@ impl IContextMenu_Impl for DeepNodeDragDropHandler_Impl {
         _psz_name: PSTR,
         _cch_max: u32,
     ) -> Result<(), windows_core::Error> {
+        Ok(())
+    }
+}
+
+fn extract_files_from_data_object(pdtobj: &IDataObject) -> Vec<PathBuf> {
+    let formatetc = FORMATETC {
+        cfFormat: 15, // CF_HDROP
+        ptd: std::ptr::null_mut(),
+        dwAspect: 1,  // DVASPECT_CONTENT
+        lindex: -1,
+        tymed: TYMED_HGLOBAL.0 as u32,
+    };
+
+    unsafe {
+        if let Ok(mut medium) = pdtobj.GetData(&formatetc) {
+            let hdrop = HDROP(medium.u.hGlobal.0);
+            let count = DragQueryFileW(hdrop, 0xFFFFFFFF, None);
+            let mut files = Vec::new();
+
+            for i in 0..count {
+                let len = DragQueryFileW(hdrop, i, None) as usize;
+                if len > 0 {
+                    let mut buf = vec![0u16; len + 1];
+                    DragQueryFileW(hdrop, i, Some(&mut buf));
+                    let path = String::from_utf16_lossy(&buf[..len]);
+                    files.push(PathBuf::from(path));
+                }
+            }
+
+            ReleaseStgMedium(&mut medium);
+            files
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+static LAST_POPUP_CALL: Mutex<Option<(std::time::Instant, usize, PathBuf)>> = Mutex::new(None);
+
+fn spawn_deepnode_copy_popup(sources: &[PathBuf], target_path: &PathBuf) -> bool {
+    if sources.is_empty() || target_path.as_os_str().is_empty() {
+        return false;
+    }
+
+    {
+        let mut last = LAST_POPUP_CALL.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((instant, count, ref tgt)) = *last {
+            if instant.elapsed() < std::time::Duration::from_millis(1500)
+                && count == sources.len()
+                && tgt == target_path
+            {
+                crate::util::log_shell("spawn_deepnode_copy_popup: duplicate call debounced");
+                return true;
+            }
+        }
+        *last = Some((std::time::Instant::now(), sources.len(), target_path.clone()));
+    }
+
+    let temp_dir = std::env::temp_dir();
+    let unique_id = uuid::Uuid::new_v4();
+    let list_file = temp_dir.join(format!("deepnode_list_{}.tmp", unique_id));
+    let mut list_content = String::new();
+    for src in sources {
+        list_content.push_str(&src.to_string_lossy());
+        list_content.push('\n');
+    }
+
+    if let Err(e) = std::fs::write(&list_file, list_content) {
+        crate::util::log_shell(&format!("Failed to write temporary list file {:?}: {}", list_file, e));
+        return false;
+    }
+
+    let exe = get_exe_path();
+    let mut cmd = std::process::Command::new(&exe);
+    if let Some(parent) = exe.parent() {
+        cmd.current_dir(parent);
+    }
+
+    let target_str = target_path.to_string_lossy().to_string();
+    cmd.arg("--popup")
+        .arg(format!("*{}", list_file.display()))
+        .arg(&target_str);
+
+    crate::util::log_shell(&format!(
+        "spawn_deepnode_copy_popup: executing {:?} with --popup *{} {}",
+        exe, list_file.display(), target_str
+    ));
+
+    match cmd.spawn() {
+        Ok(_) => {
+            crate::util::log_shell("spawn_deepnode_copy_popup: process spawned successfully");
+            true
+        }
+        Err(e) => {
+            crate::util::log_shell(&format!("spawn_deepnode_copy_popup: failed to spawn: {}", e));
+            false
+        }
+    }
+}
+
+impl IPersist_Impl for DeepNodeDragDropHandler_Impl {
+    fn GetClassID(&self) -> windows_core::Result<windows_core::GUID> {
+        Ok(CLSID_DEEPNODE_DRAGDROP)
+    }
+}
+
+impl IPersistFile_Impl for DeepNodeDragDropHandler_Impl {
+    fn IsDirty(&self) -> windows_core::HRESULT {
+        windows::Win32::Foundation::S_FALSE
+    }
+
+    fn Load(&self, pszfilename: &windows_core::PCWSTR, _dwmode: STGM) -> windows_core::Result<()> {
+        unsafe {
+            if !pszfilename.is_null() {
+                let s = pszfilename.to_string().unwrap_or_default();
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    *self.target_folder.lock().unwrap_or_else(|e| e.into_inner()) = Some(PathBuf::from(trimmed));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn Save(&self, _pszfilename: &windows_core::PCWSTR, _fremember: BOOL) -> windows_core::Result<()> {
+        Err(windows_core::Error::from(windows::Win32::Foundation::E_NOTIMPL))
+    }
+
+    fn SaveCompleted(&self, _pszfilename: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        Ok(())
+    }
+
+    fn GetCurFile(&self) -> windows_core::Result<windows_core::PWSTR> {
+        Err(windows_core::Error::from(windows::Win32::Foundation::E_NOTIMPL))
+    }
+}
+
+impl IDropTarget_Impl for DeepNodeDragDropHandler_Impl {
+    fn DragEnter(
+        &self,
+        pdataobj: Option<&IDataObject>,
+        _grfkeystate: MODIFIERKEYS_FLAGS,
+        _pt: &windows::Win32::Foundation::POINTL,
+        pdweffect: *mut DROPEFFECT,
+    ) -> windows_core::Result<()> {
+        if !CopyHookHandler::should_intercept_operation() {
+            return Ok(());
+        }
+
+        if let Some(data_obj) = pdataobj {
+            let files = extract_files_from_data_object(data_obj);
+            if !files.is_empty() {
+                crate::util::log_shell(&format!("IDropTarget::DragEnter: files count={}", files.len()));
+                *self.source_files.lock().unwrap_or_else(|e| e.into_inner()) = files;
+                if !pdweffect.is_null() {
+                    unsafe {
+                        *pdweffect = DROPEFFECT_COPY | DROPEFFECT_MOVE;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn DragOver(
+        &self,
+        _grfkeystate: MODIFIERKEYS_FLAGS,
+        _pt: &windows::Win32::Foundation::POINTL,
+        pdweffect: *mut DROPEFFECT,
+    ) -> windows_core::Result<()> {
+        if !CopyHookHandler::should_intercept_operation() {
+            return Ok(());
+        }
+
+        if !pdweffect.is_null() {
+            unsafe {
+                *pdweffect = DROPEFFECT_COPY | DROPEFFECT_MOVE;
+            }
+        }
+        Ok(())
+    }
+
+    fn DragLeave(&self) -> windows_core::Result<()> {
+        Ok(())
+    }
+
+    fn Drop(
+        &self,
+        pdataobj: Option<&IDataObject>,
+        _grfkeystate: MODIFIERKEYS_FLAGS,
+        _pt: &windows::Win32::Foundation::POINTL,
+        pdweffect: *mut DROPEFFECT,
+    ) -> windows_core::Result<()> {
+        if !CopyHookHandler::should_intercept_operation() {
+            return Ok(());
+        }
+
+        if let Some(data_obj) = pdataobj {
+            let files = extract_files_from_data_object(data_obj);
+            if !files.is_empty() {
+                *self.source_files.lock().unwrap_or_else(|e| e.into_inner()) = files;
+            }
+        }
+
+        let sources = self.source_files.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let target = self.target_folder.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        crate::util::log_shell(&format!("IDropTarget::Drop called: sources={:?}, target={:?}", sources, target));
+
+        if let Some(target_path) = target {
+            if !sources.is_empty() {
+                if spawn_deepnode_copy_popup(&sources, &target_path) {
+                    crate::util::log_shell("IDropTarget::Drop spawned popup successfully, suppressing native drop with DROPEFFECT_NONE");
+                    if !pdweffect.is_null() {
+                        unsafe {
+                            *pdweffect = DROPEFFECT_NONE;
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 }

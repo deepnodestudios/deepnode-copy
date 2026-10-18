@@ -8,10 +8,14 @@ license.workspace = true
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }
 
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
 [dependencies]
 deepnode-core = { path = "../crates/deepnode-core" }
 deepnode-db = { path = "../crates/deepnode-db" }
-tauri = { version = "2.0", features = ["tray-icon"] }
+tauri = { version = "2.0", features = ["tray-icon", "image-png", "image-ico", "custom-protocol"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

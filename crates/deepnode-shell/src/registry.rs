@@ -2,12 +2,13 @@ use windows::core::{HRESULT, PCWSTR};
 use windows::Win32::Foundation::{E_FAIL, S_OK};
 use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegDeleteKeyW, RegDeleteTreeW, RegSetValueExW,
-    HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ,
+    HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ,
 };
 use crate::util::get_dll_path;
 
 pub const CLSID_COMMAND_STR: &str = "{5E8F3C72-A2D9-4E61-8C9B-93E48F1A7C20}";
-pub const CLSID_DRAGDROP_STR: &str = "{4F8E9C32-B1D8-4C50-9B8A-82E37E096B19}";
+pub const CLSID_DRAGDROP_STR: &str = "{6E8F3C72-A2D9-4E61-8C9B-93E48F1A7C21}";
+pub const CLSID_COPYHOOK_STR: &str = "{8F3A2C71-9B4E-4D26-A5F0-6E1D2B7C9A83}";
 
 fn set_reg_string(hkey: HKEY, value_name: &str, data: &str) -> bool {
     unsafe {
@@ -95,10 +96,10 @@ pub fn register_server() -> HRESULT {
         None => return E_FAIL,
     };
 
-    // Target roots: try HKEY_CLASSES_ROOT (elevated), fallback to HKCU\Software\Classes (user)
+    // Target roots: HKCU\Software\Classes (user, always works) and HKEY_CLASSES_ROOT (system-wide if elevated)
     let roots = [
-        (HKEY_CLASSES_ROOT, ""),
         (HKEY_CURRENT_USER, r"Software\Classes\"),
+        (HKEY_CLASSES_ROOT, ""),
     ];
 
     let mut registered = false;
@@ -117,24 +118,61 @@ pub fn register_server() -> HRESULT {
             set_key_default_value(root, &inproc_dd_key, &dll_path);
             set_key_named_value(root, &inproc_dd_key, "ThreadingModel", "Apartment");
 
-            // 3. Register DragDropHandlers
-            for target in &["*", "Directory", "Drive"] {
+            // 3. Copy Hook CLSID
+            let clsid_ch_key = format!("{}CLSID\\{}", prefix, CLSID_COPYHOOK_STR);
+            let inproc_ch_key = format!("{}\\InprocServer32", clsid_ch_key);
+            set_key_default_value(root, &clsid_ch_key, "DeepNode Copy Hook Handler");
+            set_key_default_value(root, &inproc_ch_key, &dll_path);
+            set_key_named_value(root, &inproc_ch_key, "ThreadingModel", "Apartment");
+
+            // 4. Register DragDropHandlers (for items, folders, background, and desktop)
+            for target in &["*", "Directory", "Folder", "Directory\\Background", "Drive", "Drive\\Background", "DesktopBackground"] {
                 let dd_key = format!(r"{}{}\shellex\DragDropHandlers\DeepNodeCopy", prefix, target);
                 set_key_default_value(root, &dd_key, CLSID_DRAGDROP_STR);
             }
 
-            // 4. Register ContextMenuHandlers (classic Explorer fallback)
-            for target in &["*", "Directory", "Directory\\Background", "Drive"] {
+            // 5. Register CopyHookHandlers
+            for target in &["Directory", "Folder"] {
+                let ch_key = format!(r"{}{}\shellex\CopyHookHandlers\DeepNodeCopy", prefix, target);
+                set_key_default_value(root, &ch_key, CLSID_COPYHOOK_STR);
+            }
+
+            // 6. Register ContextMenuHandlers (classic Explorer fallback)
+            for target in &["*", "Directory", "Folder", "Directory\\Background", "Drive", "Drive\\Background", "DesktopBackground"] {
                 let cm_key = format!(r"{}{}\shellex\ContextMenuHandlers\DeepNodeCopy", prefix, target);
                 set_key_default_value(root, &cm_key, CLSID_COMMAND_STR);
             }
 
+            // 7. Register DropHandler (Left-click and native OLE drag & drop on folders and directories)
+            for target in &["Directory", "Folder", "Directory\\Background", "Drive"] {
+                let dh_key = format!(r"{}{}\shellex\DropHandler\DeepNodeCopy", prefix, target);
+                set_key_default_value(root, &dh_key, CLSID_DRAGDROP_STR);
+
+                let dh_def = format!(r"{}{}\shellex\DropHandler", prefix, target);
+                set_key_default_value(root, &dh_def, CLSID_DRAGDROP_STR);
+            }
+
+            // 8. Register in Shell Extensions Approved
+            let approved_path = r"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved";
+            for app_root in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+                set_key_named_value(app_root, approved_path, CLSID_COMMAND_STR, "DeepNode Copy Context Menu Extension");
+                set_key_named_value(app_root, approved_path, CLSID_DRAGDROP_STR, "DeepNode Copy Drag Drop Extension");
+                set_key_named_value(app_root, approved_path, CLSID_COPYHOOK_STR, "DeepNode Copy Hook Extension");
+            }
+
             registered = true;
-            break;
         }
     }
 
     if registered {
+        unsafe {
+            windows::Win32::UI::Shell::SHChangeNotify(
+                windows::Win32::UI::Shell::SHCNE_ASSOCCHANGED,
+                windows::Win32::UI::Shell::SHCNF_IDLIST,
+                None,
+                None,
+            );
+        }
         S_OK
     } else {
         E_FAIL
@@ -149,23 +187,38 @@ pub fn unregister_server() -> HRESULT {
 
     for (root, prefix) in roots {
         // 1. Delete DragDropHandlers
-        for target in &["*", "Directory", "Drive"] {
+        for target in &["*", "Directory", "Folder", "Directory\\Background", "Drive", "Drive\\Background", "DesktopBackground"] {
             let dd_key = format!(r"{}{}\shellex\DragDropHandlers\DeepNodeCopy", prefix, target);
             delete_key_tree(root, &dd_key);
         }
 
-        // 2. Delete ContextMenuHandlers
-        for target in &["*", "Directory", "Directory\\Background", "Drive"] {
+        // 2. Delete CopyHookHandlers
+        for target in &["Directory", "Folder"] {
+            let ch_key = format!(r"{}{}\shellex\CopyHookHandlers\DeepNodeCopy", prefix, target);
+            delete_key_tree(root, &ch_key);
+        }
+
+        // 3. Delete ContextMenuHandlers
+        for target in &["*", "Directory", "Folder", "Directory\\Background", "Drive", "Drive\\Background", "DesktopBackground"] {
             let cm_key = format!(r"{}{}\shellex\ContextMenuHandlers\DeepNodeCopy", prefix, target);
             delete_key_tree(root, &cm_key);
         }
 
-        // 3. Delete CLSIDs
+        // 4. Delete DropHandlers
+        for target in &["Directory", "Folder", "Directory\\Background", "Drive"] {
+            let dh_key = format!(r"{}{}\shellex\DropHandler\DeepNodeCopy", prefix, target);
+            delete_key_tree(root, &dh_key);
+        }
+
+        // 4. Delete CLSIDs
         let clsid_cmd_key = format!("{}CLSID\\{}", prefix, CLSID_COMMAND_STR);
         delete_key_tree(root, &clsid_cmd_key);
 
         let clsid_dd_key = format!("{}CLSID\\{}", prefix, CLSID_DRAGDROP_STR);
         delete_key_tree(root, &clsid_dd_key);
+
+        let clsid_ch_key = format!("{}CLSID\\{}", prefix, CLSID_COPYHOOK_STR);
+        delete_key_tree(root, &clsid_ch_key);
     }
 
     S_OK

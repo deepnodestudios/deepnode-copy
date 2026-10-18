@@ -267,7 +267,11 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose, lang })
   const triggerInstall = async () => {
     setInstalling(true);
     try {
-      await invoke("install_app_update");
+      if (stagedUpdate) {
+        await invoke("apply_staged_update_now");
+      } else {
+        await invoke("install_app_update");
+      }
     } catch (err: any) {
       setInstalling(false);
       setDlStatus("error");

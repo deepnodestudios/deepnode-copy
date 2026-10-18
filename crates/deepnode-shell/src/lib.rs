@@ -9,7 +9,7 @@ pub mod util;
 pub mod registry;
 
 pub use sparse::SparsePackage;
-pub use copy_handler::CopyHookHandler;
+pub use copy_handler::{CopyHookHandler, DeepNodeCopyHook, DeepNodeCopyHookClassFactory, CLSID_DEEPNODE_COPYHOOK};
 pub use context_menu::{DeepNodeExplorerCommand, DeepNodeClassFactory, CLSID_DEEPNODE_COMMAND};
 pub use drag_drop::{DeepNodeDragDropHandler, DeepNodeDragDropClassFactory, CLSID_DEEPNODE_DRAGDROP};
 
@@ -47,6 +47,8 @@ pub unsafe extern "system" fn DllGetClassObject(
         return windows::Win32::Foundation::E_POINTER;
     }
 
+    util::log_shell(&format!("DllGetClassObject: rclsid={:?}, riid={:?}", *rclsid, *riid));
+
     if *rclsid == CLSID_DEEPNODE_COMMAND {
         let factory: IClassFactory = DeepNodeClassFactory::new().into();
         return factory.query(riid, ppv);
@@ -54,6 +56,11 @@ pub unsafe extern "system" fn DllGetClassObject(
 
     if *rclsid == CLSID_DEEPNODE_DRAGDROP {
         let factory: IClassFactory = DeepNodeDragDropClassFactory::new().into();
+        return factory.query(riid, ppv);
+    }
+
+    if *rclsid == CLSID_DEEPNODE_COPYHOOK {
+        let factory: IClassFactory = DeepNodeCopyHookClassFactory::new().into();
         return factory.query(riid, ppv);
     }
 

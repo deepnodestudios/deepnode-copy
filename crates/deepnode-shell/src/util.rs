@@ -100,37 +100,38 @@ pub fn get_exe_path() -> PathBuf {
 
     // 2. Windows App Paths registry keys
     for root in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
-        if let Some(p) = query_reg_path(
-            root,
-            r"Software\Microsoft\Windows\CurrentVersion\App Paths\DeepNodeCopy.exe",
-            "",
-        ) {
-            if p.is_file() {
-                return p;
+        for exe_name in &["deepnode-gui.exe", "DeepNodeCopy.exe"] {
+            let app_path_key = format!(r"Software\Microsoft\Windows\CurrentVersion\App Paths\{}", exe_name);
+            if let Some(p) = query_reg_path(root, &app_path_key, "") {
+                if p.is_file() {
+                    return p;
+                }
             }
         }
         if let Some(dir) = query_reg_path(root, r"Software\DeepNode\DeepNode Copy", "InstallPath") {
-            let candidate = dir.join("DeepNodeCopy.exe");
-            if candidate.is_file() {
-                return candidate;
+            for name in &["deepnode-gui.exe", "DeepNodeCopy.exe"] {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return candidate;
+                }
             }
         }
     }
 
-    // 3. Standard Program Files installation paths
-    if let Ok(pf) = std::env::var("ProgramFiles") {
-        let p = PathBuf::from(pf).join("DeepNode Copy").join("DeepNodeCopy.exe");
-        if p.is_file() {
-            return p;
-        }
-    }
-    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        let p = PathBuf::from(local_app_data)
-            .join("Programs")
-            .join("DeepNode Copy")
-            .join("DeepNodeCopy.exe");
-        if p.is_file() {
-            return p;
+    // 3. Standard Program Files and LocalAppData installation paths
+    let candidate_dirs = [
+        std::env::var("LOCALAPPDATA").ok().map(|d| PathBuf::from(d).join("DeepNode Copy")),
+        std::env::var("LOCALAPPDATA").ok().map(|d| PathBuf::from(d).join("Programs").join("DeepNode Copy")),
+        std::env::var("ProgramFiles").ok().map(|d| PathBuf::from(d).join("DeepNode Copy")),
+        std::env::var("ProgramFiles(x86)").ok().map(|d| PathBuf::from(d).join("DeepNode Copy")),
+    ];
+
+    for dir_opt in candidate_dirs.into_iter().flatten() {
+        for name in &["deepnode-gui.exe", "DeepNodeCopy.exe"] {
+            let p = dir_opt.join(name);
+            if p.is_file() {
+                return p;
+            }
         }
     }
 
@@ -154,4 +155,17 @@ pub fn get_exe_path() -> PathBuf {
     }
 
     PathBuf::from("DeepNodeCopy.exe")
+}
+
+/// Appends a debug message to %APPDATA%\DeepNodeCopy\shell.log
+pub fn log_shell(msg: &str) {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let dir = PathBuf::from(&appdata).join("DeepNodeCopy");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("shell.log");
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            use std::io::Write;
+            let _ = writeln!(f, "[{}] [PID:{}] {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"), std::process::id(), msg);
+        }
+    }
 }

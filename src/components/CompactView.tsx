@@ -69,9 +69,48 @@ export const CompactView: React.FC<CompactViewProps> = ({
   const totalStr = formatBytes(stats.total_bytes);
   const etaStr = formatEta(stats.eta_seconds, lang);
 
+  const [autoCloseRemaining, setAutoCloseRemaining] = React.useState<number | null>(null);
+  const [isHovered, setIsHovered] = React.useState(false);
+
+  React.useEffect(() => {
+    // If completed without fatal errors, start 2.5s auto-close timer (matching reference copy tool UX)
+    if (status === "completed") {
+      setAutoCloseRemaining(2.5);
+    } else {
+      setAutoCloseRemaining(null);
+    }
+  }, [status]);
+
+  React.useEffect(() => {
+    if (autoCloseRemaining === null) return;
+    if (autoCloseRemaining <= 0) {
+      if (onCloseApp) {
+        onCloseApp();
+      }
+      return;
+    }
+
+    if (isHovered) {
+      // Pause countdown while user hovers over the window
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setAutoCloseRemaining((prev) => {
+        if (prev === null) return null;
+        const next = Math.max(0, parseFloat((prev - 0.1).toFixed(1)));
+        return next;
+      });
+    }, 100);
+
+    return () => clearInterval(interval);
+  }, [autoCloseRemaining, isHovered, onCloseApp]);
+
   return (
     <div
       data-tauri-drag-region="deep"
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
       onMouseDown={(e) => {
         if (e.button === 0 && !(e.target as HTMLElement)?.closest('button, input, select, a, [role="button"], textarea')) {
           getCurrentWindow().startDragging().catch(() => {});
@@ -234,9 +273,21 @@ export const CompactView: React.FC<CompactViewProps> = ({
               </button>
             </>
           ) : status === "completed" ? (
-            <span data-tauri-drag-region="deep" className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
-              <span>✔ {lang === "tr" ? "Aktarım Tamamlandı" : "Transfer Completed"}</span>
-            </span>
+            <div data-tauri-drag-region="deep" className="flex items-center gap-2">
+              <span data-tauri-drag-region="deep" className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
+                <span>✔ {lang === "tr" ? "Aktarım Tamamlandı" : "Transfer Completed"}</span>
+              </span>
+              {autoCloseRemaining !== null && autoCloseRemaining > 0 && (
+                <span data-tauri-drag-region="deep" className="text-[11px] text-slate-400 font-mono">
+                  ({Math.ceil(autoCloseRemaining)}s {lang === "tr" ? "kapanıyor" : "closing"}...)
+                </span>
+              )}
+              {isHovered && autoCloseRemaining !== null && (
+                <span data-tauri-drag-region="deep" className="text-[10px] text-amber-400 font-mono">
+                  [{lang === "tr" ? "Duraklatıldı" : "Paused"}]
+                </span>
+              )}
+            </div>
           ) : status === "canceled" ? (
             <span data-tauri-drag-region="deep" className="text-xs font-semibold text-rose-400 flex items-center gap-1.5">
               <span>✕ {lang === "tr" ? "Aktarım İptal Edildi" : "Transfer Canceled"}</span>
@@ -251,7 +302,10 @@ export const CompactView: React.FC<CompactViewProps> = ({
 
         <button
           data-tauri-drag-region="false"
-          onClick={onExpand}
+          onClick={() => {
+            setAutoCloseRemaining(null);
+            onExpand();
+          }}
           className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#121827] hover:bg-[#1a233a] border border-[#1e293b] text-slate-200 text-xs font-semibold transition cursor-pointer shadow-sm"
         >
           <ChevronDown className="w-3.5 h-3.5 text-slate-400" />

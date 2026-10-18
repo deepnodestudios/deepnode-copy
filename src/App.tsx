@@ -162,6 +162,7 @@ export const App: React.FC = () => {
     let isMounted = true;
     let unlistenFn: (() => void) | null = null;
     let unlistenDragDrop: (() => void) | null = null;
+    let unlistenPopup: (() => void) | null = null;
 
     const setupApp = async () => {
       // 0. Listen for native OS drag & drop events from Windows Explorer
@@ -328,6 +329,11 @@ export const App: React.FC = () => {
                 message: `Transfer completed: ${data.payload.completed_files}/${data.payload.total_files} files (${data.payload.transferred_bytes} bytes)`,
                 level: "info",
               });
+              if (onFinishAction === "close_app") {
+                setTimeout(() => {
+                  handleCloseApp();
+                }, 2000);
+              }
               break;
 
             case "TransferCanceled":
@@ -374,6 +380,97 @@ export const App: React.FC = () => {
         }
       } catch (err) {
         console.error("Error setting up event listener:", err);
+      }
+
+      // 1.1 Listen for Explorer Ctrl+V / Drag-Drop interceptor modal trigger
+      try {
+        const unlisten = await listen<{ sources: string[]; destination: string }>(
+          "open_copy_paste_modal",
+          (event) => {
+            if (!isMounted) return;
+            if (event.payload && event.payload.sources && event.payload.sources.length > 0) {
+              setStagedSources(event.payload.sources);
+              updatePreview(event.payload.sources);
+              setDestination(event.payload.destination || "");
+              setCopyPasteModalOpen(true);
+            }
+          }
+        );
+        if (!isMounted) {
+          unlisten();
+        } else {
+          unlistenPopup = unlisten;
+        }
+      } catch (err) {
+        console.error("Error setting up open_copy_paste_modal listener:", err);
+      }
+
+      // 1.15 Listen for main window restore signal from primary/secondary instance activation
+      try {
+        const unlistenRestore = await listen("restore_main_ui", () => {
+          if (!isMounted) return;
+          setCopyPasteModalOpen(false);
+          setIsCompact(false);
+        });
+        if (!isMounted) {
+          unlistenRestore();
+        }
+      } catch (err) {
+        console.error("Error setting up restore_main_ui listener:", err);
+      }
+
+      // 1.2 Listen for forwarded CLI arguments from secondary instances
+      try {
+        const unlisten = await listen<{
+          sources: string[];
+          destination?: string;
+          auto_start: boolean;
+          mode: string;
+        }>("cli_args_forwarded", async (event) => {
+          if (!isMounted) return;
+          const p = event.payload;
+          if (p.sources && p.sources.length > 0) {
+            setStagedSources(p.sources);
+            updatePreview(p.sources);
+            if (p.destination) {
+              setDestination(p.destination);
+            }
+            if (p.auto_start && p.destination) {
+              setIsCompact(true);
+              invoke("toggle_compact_mode", { compact: true }).catch(() => {});
+              setTransferStatus("transferring");
+              try {
+                const init = await invoke<StartTransferResult>("start_transfer", {
+                  sources: p.sources,
+                  destination: p.destination,
+                  mode: p.mode || "copy",
+                  verifyMode: "always",
+                  hashAlgorithm: "xxhash3",
+                  conflictPolicy: "ask",
+                  directIo: false,
+                  onFinish: "do_nothing",
+                });
+                if (init && init.items) {
+                  setStats((prev) => ({
+                    ...prev,
+                    total_files: init.total_files,
+                    total_bytes: init.total_bytes,
+                    current_file_name: init.items[0]?.relative_path || init.items[0]?.src_path || "",
+                    current_file_size: init.items[0]?.size || 0,
+                  }));
+                  setFiles(init.items);
+                }
+              } catch (e) {
+                console.error("Auto transfer start error:", e);
+              }
+            }
+          }
+        });
+        if (!isMounted) {
+          unlisten();
+        }
+      } catch (err) {
+        console.error("Error setting up cli_args_forwarded listener:", err);
       }
 
       // 2. Check current transfer state (if auto-started by Rust) or launch args
@@ -485,6 +582,7 @@ export const App: React.FC = () => {
     return () => {
       if (unlistenFn) unlistenFn();
       if (unlistenDragDrop) unlistenDragDrop();
+      if (unlistenPopup) unlistenPopup();
     };
   }, []);
 
@@ -873,7 +971,62 @@ export const App: React.FC = () => {
 
   return (
     <main data-tauri-drag-region="deep" className="w-screen h-screen overflow-hidden bg-[#070a12] text-neutral-100 flex flex-col font-sans select-none">
-      {isCompact ? (
+      {copyPasteModalOpen ? (
+        <CopyPasteModal
+          isOpen={true}
+          source={
+            stagedSources.length > 1
+              ? `${stagedSources[0]} (+${stagedSources.length - 1} ${translations[lang]?.selectedItems || "öğe"})`
+              : stagedSources[0] || ""
+          }
+          destination={destination || ""}
+          onClose={async () => {
+            setCopyPasteModalOpen(false);
+            try {
+              await invoke("close_app");
+            } catch (e) {
+              console.error(e);
+            }
+          }}
+          onSelectExplorer={async () => {
+            setCopyPasteModalOpen(false);
+            try {
+              await invoke("explorer_copy", {
+                sources: stagedSources,
+                destination: destination || "",
+              });
+            } catch (e) {
+              console.error("Explorer copy failed:", e);
+            }
+            try {
+              await invoke("close_app");
+            } catch (e) {
+              console.error(e);
+            }
+          }}
+          onSelectDeepNodeCopy={async (policy) => {
+            setCopyPasteModalOpen(false);
+            setIsCompact(true);
+            try {
+              await invoke("toggle_compact_mode", { compact: true });
+            } catch (e) {
+              console.error(e);
+            }
+            handleStartTransfer("copy", policy);
+          }}
+          onSelectDeepNodeMove={async () => {
+            setCopyPasteModalOpen(false);
+            setIsCompact(true);
+            try {
+              await invoke("toggle_compact_mode", { compact: true });
+            } catch (e) {
+              console.error(e);
+            }
+            handleStartTransfer("move");
+          }}
+          lang={lang}
+        />
+      ) : isCompact ? (
         <CompactView
           stats={stats}
           source={stagedSources[0] || ""}
@@ -968,27 +1121,6 @@ export const App: React.FC = () => {
         onCancelTransfer={handleCancel}
         lang={lang}
         isCompact={isCompact}
-      />
-
-      {/* Copy & Paste Chooser Modal */}
-      <CopyPasteModal
-        isOpen={copyPasteModalOpen}
-        source={stagedSources[0] || ""}
-        destination={destination || ""}
-        onClose={() => setCopyPasteModalOpen(false)}
-        onSelectExplorer={() => {
-          setCopyPasteModalOpen(false);
-          alert(lang === "tr" ? "Windows Gezgini ile yapıştırma seçildi." : "Pasted with Windows Explorer.");
-        }}
-        onSelectDeepNodeCopy={(policy) => {
-          setCopyPasteModalOpen(false);
-          handleStartTransfer("copy", policy);
-        }}
-        onSelectDeepNodeMove={() => {
-          setCopyPasteModalOpen(false);
-          handleStartTransfer("move");
-        }}
-        lang={lang}
       />
     </main>
   );
