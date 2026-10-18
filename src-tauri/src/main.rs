@@ -960,10 +960,12 @@ fn force_window_to_foreground(window: &tauri::WebviewWindow) {
     use windows::Win32::UI::WindowsAndMessaging::{
         GetForegroundWindow, GetWindowThreadProcessId,
         SetForegroundWindow, SetWindowPos, ShowWindow, BringWindowToTop, IsIconic,
-        HWND_TOP, HWND_TOPMOST, HWND_NOTOPMOST,
+        HWND_TOPMOST,
         SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE, SW_SHOW,
     };
-    use windows::Win32::UI::Input::KeyboardAndMouse::{keybd_event, KEYEVENTF_KEYUP, VK_MENU};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        keybd_event, SetActiveWindow, SetFocus, KEYEVENTF_KEYUP, VK_MENU,
+    };
     use windows::Win32::System::Threading::AttachThreadInput;
     use windows::Win32::Foundation::HWND;
 
@@ -987,11 +989,12 @@ fn force_window_to_foreground(window: &tauri::WebviewWindow) {
             keybd_event(VK_MENU.0 as u8, 0, Default::default(), 0);
             let _ = BringWindowToTop(hwnd);
             let _ = SetForegroundWindow(hwnd);
+            let _ = SetActiveWindow(hwnd);
+            let _ = SetFocus(hwnd);
             keybd_event(VK_MENU.0 as u8, 0, KEYEVENTF_KEYUP, 0);
 
+            // Pop-up must stay HWND_TOPMOST so user's single click is immediately received without an activation delay
             let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-            let _ = SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-            let _ = SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
 
             if cur_thread != 0 && cur_thread != app_thread {
                 let _ = AttachThreadInput(cur_thread, app_thread, false);

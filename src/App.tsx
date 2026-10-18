@@ -970,7 +970,7 @@ export const App: React.FC = () => {
   };
 
   return (
-    <main data-tauri-drag-region="deep" className="w-screen h-screen overflow-hidden bg-[#070a12] text-neutral-100 flex flex-col font-sans select-none">
+    <main data-tauri-drag-region={copyPasteModalOpen ? "false" : "deep"} className="w-screen h-screen overflow-hidden bg-[#070a12] text-neutral-100 flex flex-col font-sans select-none">
       {copyPasteModalOpen ? (
         <CopyPasteModal
           isOpen={true}

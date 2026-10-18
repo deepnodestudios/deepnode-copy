@@ -42,13 +42,14 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
     action();
   };
 
-  const options: CopyPasteOption[] = [
+  const options: (CopyPasteOption & { shortcutKey: string })[] = [
     {
       id: "explorer",
       title: "Explorer",
       subtitle: "Windows Explorer",
       icon: <Folder className="w-6 h-6 text-amber-400 flex-shrink-0" />,
       action: onSelectExplorer,
+      shortcutKey: "1",
     },
     {
       id: "deepnode-copy",
@@ -56,6 +57,7 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
       subtitle: `${t.copy} (${t.directIo} & xxHash3)`,
       icon: <Zap className="w-6 h-6 text-indigo-400 flex-shrink-0" />,
       action: () => onSelectDeepNodeCopy("auto_rename"),
+      shortcutKey: "2",
     },
     {
       id: "deepnode-replace-older",
@@ -63,6 +65,7 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
       subtitle: `${t.conflictOlder} (/OverwriteOlder)`,
       icon: <RefreshCw className="w-6 h-6 text-sky-400 flex-shrink-0" />,
       action: () => onSelectDeepNodeCopy("older"),
+      shortcutKey: "3",
     },
     {
       id: "deepnode-move",
@@ -70,25 +73,30 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
       subtitle: `${t.move} (${t.destination})`,
       icon: <Zap className="w-6 h-6 text-emerald-400 flex-shrink-0" />,
       action: onSelectDeepNodeMove,
+      shortcutKey: "4",
     },
   ];
 
   useEffect(() => {
     if (isOpen) {
       setIsSubmitted(false);
+      try {
+        window.focus();
+      } catch (e) {}
     }
   }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
       if (e.key === "ArrowDown") {
         e.preventDefault();
         setSelectedIndex((prev) => (prev + 1) % options.length);
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
         setSelectedIndex((prev) => (prev - 1 + options.length) % options.length);
-      } else if (e.key === "Enter") {
+      } else if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         const selected = options[selectedIndex];
         if (selected) {
@@ -97,6 +105,18 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
       } else if (e.key === "Escape") {
         e.preventDefault();
         onClose();
+      } else if (key === "1" || key === "e") {
+        e.preventDefault();
+        handleSelectOption(options[0].action);
+      } else if (key === "2" || key === "c" || key === "k") {
+        e.preventDefault();
+        handleSelectOption(options[1].action);
+      } else if (key === "3") {
+        e.preventDefault();
+        handleSelectOption(options[2].action);
+      } else if (key === "4" || key === "m" || key === "t") {
+        e.preventDefault();
+        handleSelectOption(options[3].action);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -108,7 +128,7 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
   return (
     <div
       className="w-full h-full bg-neutral-900 border border-neutral-700/90 flex flex-col select-none overflow-hidden"
-      data-tauri-drag-region
+      data-tauri-drag-region="false"
     >
       {/* Header */}
       <div
@@ -120,11 +140,19 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
             {t.appTitle} - Copy &amp; Paste
           </h3>
         </div>
-        <div className="flex items-center gap-1.5 text-neutral-400">
+        <div className="flex items-center gap-1.5 text-neutral-400" data-tauri-drag-region="false">
           <button
-            onClick={onClose}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              onClose();
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onClose();
+            }}
             title="Close (Esc)"
-            className="p-1 hover:text-rose-400 hover:bg-neutral-800 rounded transition"
+            className="p-1 hover:text-rose-400 hover:bg-neutral-800 rounded transition cursor-pointer"
+            data-tauri-drag-region="false"
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -151,15 +179,27 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
       </div>
 
       {/* Options list */}
-      <div className="p-1.5 flex flex-col gap-1 bg-neutral-900 flex-1 overflow-y-auto">
+      <div className="p-1.5 flex flex-col gap-1 bg-neutral-900 flex-1 overflow-y-auto" data-tauri-drag-region="false">
         {options.map((opt, idx) => {
           const isSelected = selectedIndex === idx;
           return (
             <div
               key={opt.id}
-              onClick={() => handleSelectOption(opt.action)}
+              data-tauri-drag-region="false"
+              onPointerDown={(e) => {
+                if (e.button === 0) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleSelectOption(opt.action);
+                }
+              }}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                handleSelectOption(opt.action);
+              }}
               onMouseEnter={() => !isSubmitted && setSelectedIndex(idx)}
-              className={`flex items-center gap-2.5 px-3 py-1.5 rounded-lg cursor-pointer transition text-left ${
+              className={`flex items-center justify-between gap-2.5 px-3 py-1.5 rounded-lg cursor-pointer transition text-left select-none ${
                 isSubmitted ? "opacity-60 pointer-events-none cursor-not-allowed " : ""
               }${
                 isSelected
@@ -167,19 +207,30 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
                   : "hover:bg-neutral-800/60 text-neutral-200"
               }`}
             >
-              {opt.icon}
-              <div className="flex flex-col min-w-0 flex-1">
-                <div className="text-xs font-medium tracking-wide truncate">
-                  {opt.title}
-                </div>
-                <div
-                  className={`text-[10px] truncate font-mono ${
-                    isSelected ? "text-indigo-100" : "text-neutral-400"
-                  }`}
-                >
-                  {opt.subtitle}
+              <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                {opt.icon}
+                <div className="flex flex-col min-w-0 flex-1">
+                  <div className="text-xs font-medium tracking-wide truncate">
+                    {opt.title}
+                  </div>
+                  <div
+                    className={`text-[10px] truncate font-mono ${
+                      isSelected ? "text-indigo-100" : "text-neutral-400"
+                    }`}
+                  >
+                    {opt.subtitle}
+                  </div>
                 </div>
               </div>
+              <span
+                className={`text-[10px] font-mono px-1.5 py-0.5 rounded border transition flex-shrink-0 ${
+                  isSelected
+                    ? "bg-indigo-700/80 border-indigo-400 text-white font-bold"
+                    : "bg-neutral-800/80 border-neutral-700 text-neutral-400"
+                }`}
+              >
+                {idx === 1 ? "Enter" : opt.shortcutKey}
+              </span>
             </div>
           );
         })}
@@ -190,7 +241,7 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
         className="px-3 py-1.5 bg-neutral-950/70 border-t border-neutral-800/80 flex items-center justify-between text-[10px] text-neutral-500 font-mono cursor-move"
         data-tauri-drag-region
       >
-        <span>Enter: {t.copy} | Esc: {t.cancel}</span>
+        <span>1-4 / Enter: {t.copy} | Esc: {t.cancel}</span>
         <span className="text-indigo-400">DeepNode v{packageJson.version}</span>
       </div>
     </div>
