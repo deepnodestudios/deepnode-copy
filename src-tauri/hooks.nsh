@@ -1,17 +1,26 @@
+; Moves a shell extension DLL that Explorer may hold loaded out of the way so the new copy can be
+; written. Each run uses a fresh temp name: a fixed "deepnode_shell.old.dll" stays locked while an
+; Explorer instance still uses it, and then the rename (and the whole DLL update) silently failed.
+; The moved file is deleted now if possible, otherwise on the next reboot.
+!macro DN_RETIRE_SHELL_DLL DIR
+  Push $0
+  Delete /REBOOTOK "${DIR}\deepnode_shell.old.dll"
+  IfFileExists "${DIR}\deepnode_shell.dll" 0 +5
+    GetTempFileName $0 "${DIR}"
+    Delete "$0"
+    Rename "${DIR}\deepnode_shell.dll" "$0"
+    Delete /REBOOTOK "$0"
+  Pop $0
+!macroend
+
 !macro NSIS_HOOK_PREINSTALL
   ; Terminate any running DeepNode Copy instances
   DetailPrint "Durduruluyor: Calisan DeepNode Copy surecleri..."
   nsExec::Exec 'taskkill /F /IM deepnode-gui.exe /IM DeepNodeCopy.exe /IM "DeepNode Copy.exe"'
-  
-  ; Rename loaded shell extension DLLs so file copy is not blocked by Windows Explorer.
-  ; Rename fails when the target exists, so drop the previous .old first (or on reboot if Explorer holds it).
-  Delete /REBOOTOK "$INSTDIR\deepnode_shell.old.dll"
-  IfFileExists "$INSTDIR\deepnode_shell.dll" 0 +2
-    Rename "$INSTDIR\deepnode_shell.dll" "$INSTDIR\deepnode_shell.old.dll"
 
-  Delete /REBOOTOK "$INSTDIR\bin\deepnode_shell.old.dll"
-  IfFileExists "$INSTDIR\bin\deepnode_shell.dll" 0 +2
-    Rename "$INSTDIR\bin\deepnode_shell.dll" "$INSTDIR\bin\deepnode_shell.old.dll"
+  ; Move loaded shell extension DLLs aside so file copy is not blocked by Windows Explorer.
+  !insertmacro DN_RETIRE_SHELL_DLL "$INSTDIR"
+  !insertmacro DN_RETIRE_SHELL_DLL "$INSTDIR\bin"
 
   ; Clean up obsolete v0.2.6 executable so it is never invoked
   Delete "$INSTDIR\DeepNodeCopy.exe"
