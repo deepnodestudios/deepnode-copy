@@ -639,9 +639,7 @@ fn get_clipboard_files() -> Vec<String> {
 #[cfg(target_os = "windows")]
 fn force_window_to_foreground(window: &tauri::WebviewWindow) {
     use windows::Win32::UI::WindowsAndMessaging::{
-        SetForegroundWindow, SetWindowPos, ShowWindow, BringWindowToTop, IsIconic,
-        HWND_TOPMOST,
-        SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE, SW_SHOW,
+        SetForegroundWindow, ShowWindow, BringWindowToTop, IsIconic, SW_RESTORE, SW_SHOW,
     };
     use windows::Win32::Foundation::HWND;
 
@@ -660,9 +658,8 @@ fn force_window_to_foreground(window: &tauri::WebviewWindow) {
 
             let _ = BringWindowToTop(hwnd);
             let _ = SetForegroundWindow(hwnd);
-
-            // Pop-up must stay HWND_TOPMOST so user's single click is immediately received without an activation delay
-            let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            // Topmost is not forced here: only the choice popup asks for it (set_always_on_top),
+            // so the main and compact windows can go behind other windows normally.
         }
     }
 }
@@ -1101,10 +1098,17 @@ fn explorer_copy(sources: Vec<String>, destination: String) -> Result<(), String
 #[tauri::command]
 async fn app_ready_to_show(window: tauri::WebviewWindow, state: State<'_, AppState>) -> Result<(), String> {
     log_engine("app_ready_to_show invoked from frontend");
-    let (is_popup, auto_start, anchor) = {
+    let (is_popup, auto_start, anchor, is_silent) = {
         let guard = state.transfer_state.lock().await;
-        (guard.launch_args.is_popup, guard.launch_args.auto_start, guard.launch_args.popup_anchor)
+        let a = &guard.launch_args;
+        (a.is_popup, a.auto_start, a.popup_anchor, a.is_silent)
     };
+
+    // A --silent (background) instance stays hidden; forwarded popups/transfers show it later.
+    if is_silent {
+        log_engine("app_ready_to_show: silent mode, keeping the main window hidden");
+        return Ok(());
+    }
 
     // Size, place and show on the main thread so the popup is measured after resizing.
     let win = window.clone();
@@ -1467,9 +1471,6 @@ async fn register_shell_context_menu(_app: AppHandle, lang: Option<String>) -> R
     for target in &["Directory", "Folder", "Directory\\Background", "Drive"] {
         let _ = run_reg(&["delete", &format!("HKCU\\Software\\Classes\\{}\\shellex\\DropHandler\\DeepNodeCopy", target), "/f"]);
     }
-
-    // Autostart in silent background mode
-    let _ = run_reg(&["add", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "/v", "DeepNode Copy", "/d", &format!("\"{}\" --silent", exe_str), "/f"]);
 
     // 6. InprocServer32 DLL Registration via regsvr32
     if let Some(exe_dir) = exe.parent() {
@@ -3540,25 +3541,17 @@ fn cleanup_stale_update_files() {
 }
 
 #[cfg(target_os = "windows")]
-fn ensure_autostart_registered() {
-    if let Ok(exe) = std::env::current_exe() {
-        let exe_str = exe.to_string_lossy().to_string();
-        if !exe_str.to_lowercase().contains(r"target\debug") {
-            let cmd_line = format!("\"{}\" --silent", exe_str);
-            let _ = std::process::Command::new("reg")
-                .args(&[
-                    "add",
-                    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
-                    "/v",
-                    "DeepNode Copy",
-                    "/t",
-                    "REG_SZ",
-                    "/d",
-                    &cmd_line,
-                    "/f",
-                ])
-                .spawn();
-        }
+/// Older builds started the app with Windows (`Run` → `--silent`) to keep the global input hooks
+/// alive. The shell extension now launches the app on demand (like TeraCopy), so remove that entry.
+fn remove_legacy_autostart() {
+    use windows::core::w;
+    use windows::Win32::System::Registry::{RegDeleteKeyValueW, HKEY_CURRENT_USER};
+    unsafe {
+        let _ = RegDeleteKeyValueW(
+            HKEY_CURRENT_USER,
+            w!(r"Software\Microsoft\Windows\CurrentVersion\Run"),
+            w!("DeepNode Copy"),
+        );
     }
 }
 
@@ -3568,7 +3561,7 @@ fn main() {
     #[cfg(target_os = "windows")]
     apply_pending_update_at_startup();
     #[cfg(target_os = "windows")]
-    ensure_autostart_registered();
+    remove_legacy_autostart();
 
     let app_dir = std::env::var("APPDATA")
         .map(|a| PathBuf::from(a).join("DeepNodeCopy"))

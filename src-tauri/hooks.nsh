@@ -43,6 +43,9 @@
   IfFileExists "$INSTDIR\deepnode_shell.dll" 0 +2
     ExecWait 'regsvr32.exe /s "$INSTDIR\deepnode_shell.dll"'
 
+  ; Older versions started with Windows; the shell extension now launches the app on demand.
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "DeepNode Copy"
+
   ; Refresh Windows Explorer shell cache
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
 !macroend
@@ -57,6 +60,8 @@
 
   IfFileExists "$INSTDIR\bin\deepnode_shell.dll" 0 +2
     ExecWait 'regsvr32.exe /u /s "$INSTDIR\bin\deepnode_shell.dll"'
+
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "DeepNode Copy"
 
   ; Delete old renamed DLLs on reboot if still locked
   Delete /REBOOTOK "$INSTDIR\deepnode_shell.old.dll"

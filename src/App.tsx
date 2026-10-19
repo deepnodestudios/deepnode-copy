@@ -1022,6 +1022,8 @@ export const App: React.FC = () => {
             setIsCompact(true);
             try {
               await invoke("toggle_compact_mode", { compact: true });
+              // The chooser popup is topmost; the transfer view follows the user's pin setting.
+              await invoke("set_always_on_top", { alwaysOnTop });
             } catch (e) {
               console.error(e);
             }
@@ -1032,6 +1034,7 @@ export const App: React.FC = () => {
             setIsCompact(true);
             try {
               await invoke("toggle_compact_mode", { compact: true });
+              await invoke("set_always_on_top", { alwaysOnTop });
             } catch (e) {
               console.error(e);
             }
