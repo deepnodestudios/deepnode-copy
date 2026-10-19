@@ -736,6 +736,7 @@ export const App: React.FC = () => {
 
   const handleCloseApp = async () => {
     try {
+      await Sentry.flush(1500).catch(() => false); // send queued events before the process exits
       await invoke("close_app");
     } catch (e) {
       console.error("close_app error:", e);
@@ -996,6 +997,7 @@ export const App: React.FC = () => {
           onClose={async () => {
             setCopyPasteModalOpen(false);
             try {
+              await Sentry.flush(1500).catch(() => false); // send queued events before the process exits
               await invoke("close_app");
             } catch (e) {
               console.error(e);
@@ -1012,6 +1014,7 @@ export const App: React.FC = () => {
               console.error("Explorer copy failed:", e);
             }
             try {
+              await Sentry.flush(1500).catch(() => false); // send queued events before the process exits
               await invoke("close_app");
             } catch (e) {
               console.error(e);

@@ -1168,6 +1168,7 @@ async fn close_app(app: AppHandle, state: State<'_, AppState>) -> Result<(), Str
     #[cfg(target_os = "windows")]
     apply_silent_update_on_exit();
 
+    flush_telemetry();
     std::process::exit(0);
 }
 
@@ -1282,6 +1283,15 @@ async fn log_js(msg: String) -> Result<(), String> {
         sentry::capture_message(&msg, sentry::Level::Error);
     }
     Ok(())
+}
+
+/// Sends queued Sentry events before the process exits. `std::process::exit` skips the guard's
+/// drop in `main`, which would otherwise discard anything captured just before closing.
+fn flush_telemetry() {
+    if let Some(client) = sentry::Hub::main().client() {
+        let flushed = client.flush(Some(std::time::Duration::from_secs(2)));
+        log_engine(&format!("flush_telemetry: Sentry queue flushed={}", flushed));
+    }
 }
 
 #[tauri::command]
@@ -2954,6 +2964,7 @@ fn apply_staged_update_now() -> Result<(), String> {
     log_engine("apply_staged_update_now invoked by user/frontend: applying update and exiting");
     #[cfg(target_os = "windows")]
     apply_silent_update_on_exit();
+    flush_telemetry();
     std::process::exit(0);
 }
 
@@ -3269,6 +3280,7 @@ fn install_app_update() -> Result<(), String> {
         // Close current application cleanly so file can be overwritten or setup can proceed
         std::thread::spawn(|| {
             std::thread::sleep(std::time::Duration::from_millis(300));
+            flush_telemetry();
             std::process::exit(0);
         });
 
@@ -3827,6 +3839,7 @@ fn check_single_instance(raw_args: &[String]) -> bool {
                     state.cancel_flag.store(true, Ordering::SeqCst);
                     #[cfg(target_os = "windows")]
                     apply_silent_update_on_exit();
+                    flush_telemetry();
                     std::process::exit(0);
                 }
             })

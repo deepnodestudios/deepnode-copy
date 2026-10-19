@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import * as Sentry from "@sentry/react";
 import { listen } from "@tauri-apps/api/event";
 import {
   X,
@@ -267,6 +268,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose, lang })
   const triggerInstall = async () => {
     setInstalling(true);
     try {
+      await Sentry.flush(1500).catch(() => false); // the app exits right after
       if (stagedUpdate) {
         await invoke("apply_staged_update_now");
       } else {
