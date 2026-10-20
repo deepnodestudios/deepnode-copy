@@ -677,13 +677,11 @@ fn place_popup_window(window: &tauri::WebviewWindow, anchor: Option<(i32, i32)>)
     use windows::Win32::Foundation::{HWND, POINT, RECT};
     use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
     use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST};
-    use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
-    use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetWindowRect};
+    use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetClientRect, GetCursorPos, GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
+    };
 
-    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-        width: POPUP_SIZE.0,
-        height: POPUP_SIZE.1,
-    }));
     let Ok(hwnd_raw) = window.hwnd() else { return };
     let hwnd = HWND(hwnd_raw.0 as *mut _);
 
@@ -698,23 +696,46 @@ fn place_popup_window(window: &tauri::WebviewWindow, anchor: Option<(i32, i32)>)
         }
     };
 
-    // Second pass only matters when the first move crossed to a monitor with another DPI and
-    // Windows rescaled the window.
+    // Resolve the target monitor first: a window that has not been shown yet reports a
+    // scale factor of 1.0, so Tauri's Logical size lands as physical pixels and the popup
+    // opens smaller on scaled displays. Size in physical pixels for the target DPI instead.
+    let (target_dpi, work) = unsafe {
+        let monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if monitor.is_invalid() || !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return;
+        }
+        let (mut dpi_x, mut dpi_y) = (96u32, 96u32);
+        let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y);
+        (dpi_x.max(96), info.rcWork)
+    };
+
+    let client_w = (POPUP_SIZE.0 * target_dpi as f64 / 96.0).round() as i32;
+    let client_h = (POPUP_SIZE.1 * target_dpi as f64 / 96.0).round() as i32;
+
+    let (mut x, mut y) = (pt.x.max(work.left), pt.y.max(work.top));
+    if x + client_w > work.right {
+        x = (work.right - client_w).max(work.left);
+    }
+    if y + client_h > work.bottom {
+        y = (work.bottom - client_h).max(work.top);
+    }
+
+    // Move first so Windows assigns the target monitor's DPI, then set the exact physical
+    // size synchronously. The second pass covers a WM_DPICHANGED resize triggered by the move.
     for _ in 0..2 {
         unsafe {
-            let monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
-            let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
-            if monitor.is_invalid() || !GetMonitorInfoW(monitor, &mut info).as_bool() {
-                return;
-            }
-            let work = info.rcWork;
-
-            // The undecorated window keeps invisible resize borders around its visible frame;
-            // align and clamp the visible frame, not the outer rect.
             let mut outer = RECT::default();
+            let mut client = RECT::default();
             if GetWindowRect(hwnd, &mut outer).is_err() {
                 return;
             }
+            let _ = GetClientRect(hwnd, &mut client);
+            let frame_w = (outer.right - outer.left) - client.right;
+            let frame_h = (outer.bottom - outer.top) - client.bottom;
+
+            // The undecorated window keeps invisible resize borders around its visible frame;
+            // align the visible frame with the anchor, not the outer rect.
             let mut visible = outer;
             let _ = DwmGetWindowAttribute(
                 hwnd,
@@ -722,31 +743,17 @@ fn place_popup_window(window: &tauri::WebviewWindow, anchor: Option<(i32, i32)>)
                 &mut visible as *mut RECT as *mut _,
                 std::mem::size_of::<RECT>() as u32,
             );
+            let (inset_left, inset_top) = (visible.left - outer.left, visible.top - outer.top);
 
-            // Physical sizes scale from the window's current DPI to the target monitor's DPI.
-            let (mut dpi_x, mut dpi_y) = (96u32, 96u32);
-            let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y);
-            let current_dpi = GetDpiForWindow(hwnd).max(1) as f64;
-            let scale = |v: i32| (v as f64 * dpi_x as f64 / current_dpi).round() as i32;
-            let (inset_left, inset_top) = (scale(visible.left - outer.left), scale(visible.top - outer.top));
-            let (width, height) = (scale(visible.right - visible.left), scale(visible.bottom - visible.top));
-
-            let (mut x, mut y) = (pt.x.max(work.left), pt.y.max(work.top));
-            if x + width > work.right {
-                x = (work.right - width).max(work.left);
-            }
-            if y + height > work.bottom {
-                y = (work.bottom - height).max(work.top);
-            }
-
-            let target = (x - inset_left, y - inset_top);
-            if (outer.left, outer.top) == target && dpi_x as f64 == current_dpi {
-                return;
-            }
-            let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-                x: target.0,
-                y: target.1,
-            }));
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                x - inset_left,
+                y - inset_top,
+                client_w + frame_w,
+                client_h + frame_h,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
         }
     }
 }
