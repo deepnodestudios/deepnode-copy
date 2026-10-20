@@ -22,6 +22,7 @@ src-tauri/target/
 installers/
 package_output/
 package_layout/
+release_assets/
 
 # Certificates, Keys & Secrets (CRITICAL FOR PUBLIC REPOS)
 certificates/

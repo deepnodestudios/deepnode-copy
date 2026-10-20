@@ -10,6 +10,6 @@ Sessiz güncelleme (silent update) değişmedi: uygulama her açılışta yeni s
 ---
 
 ### İndirilebilir Dosyalar
-- **DeepNodeCopy_Setup_x64.exe** — Windows x64 NSIS kurulum paketi (önerilen)
-- **DeepNodeCopy_Setup_x64.msi** — Windows x64 MSI kurulum paketi
-- **deepnode-gui.exe** — Taşınabilir (portable) sürüm
+- **DeepNodeCopy_Setup_x64_v0.3.2.exe** — Windows x64 NSIS kurulum paketi (önerilen)
+- **DeepNodeCopy_Setup_x64_v0.3.2.msi** — Windows x64 MSI kurulum paketi
+- **deepnode-gui_v0.3.2.exe** — Taşınabilir (portable) sürüm
