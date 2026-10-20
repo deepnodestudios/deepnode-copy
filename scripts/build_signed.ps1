@@ -19,6 +19,9 @@ try {
 
     npx tauri build
     if ($LASTEXITCODE -ne 0) { throw "tauri build başarısız" }
+
+    # Tauri's per-bundle exe patching can leave the portable binary unsigned.
+    & (Join-Path $PSScriptRoot "sign_file.ps1") (Join-Path $root "target\release\deepnode-gui.exe")
 } finally {
     Pop-Location
 }

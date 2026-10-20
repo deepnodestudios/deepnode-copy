@@ -52,8 +52,8 @@ if (-not $Upload) {
 git -C $root rev-parse -q --verify "refs/tags/$tag" *> $null
 if ($LASTEXITCODE -ne 0) { throw "'$tag' etiketi yok. Önce sürümü commit'leyip 'git tag $tag' ve 'git push origin $tag' çalıştırın." }
 
-gh release view $tag *> $null
-if ($LASTEXITCODE -ne 0) {
+$existingTags = gh release list --limit 100 --json tagName --jq '.[].tagName'
+if ($existingTags -notcontains $tag) {
     $notesFile = Join-Path $root "release_notes_$tag.md"
     $createArgs = @("release", "create", $tag, "--title", "DeepNode Copy $tag", "--verify-tag")
     if (Test-Path $notesFile) { $createArgs += @("--notes-file", $notesFile) } else { $createArgs += "--generate-notes" }
