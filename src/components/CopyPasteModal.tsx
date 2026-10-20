@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Folder, Zap, RefreshCw, X, ArrowDown } from "lucide-react";
+import { Folder, Zap, RefreshCw, X, ArrowDown, Settings } from "lucide-react";
 import { translations, Language } from "../i18n";
 import packageJson from "../../package.json";
 
@@ -20,7 +20,13 @@ interface CopyPasteModalProps {
   onSelectDeepNodeCopy: (policy?: string) => void;
   onSelectDeepNodeMove: () => void;
   lang?: Language;
+  rememberChoice?: boolean;
+  lastChoice?: string | null;
+  onRememberChoice?: (id: string) => void;
+  onChangeRememberChoice?: (enabled: boolean) => void;
 }
+
+const OPTION_IDS = ["explorer", "deepnode-copy", "deepnode-replace-older", "deepnode-move"];
 
 export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
   isOpen,
@@ -31,15 +37,30 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
   onSelectDeepNodeCopy,
   onSelectDeepNodeMove,
   lang = "tr",
+  rememberChoice = false,
+  lastChoice = null,
+  onRememberChoice,
+  onChangeRememberChoice,
 }) => {
-  const [selectedIndex, setSelectedIndex] = useState(1); // Default to DeepNode Copy
+  const initialIndex = () => {
+    if (rememberChoice && lastChoice) {
+      const remembered = OPTION_IDS.indexOf(lastChoice);
+      if (remembered >= 0) return remembered;
+    }
+    return 1; // DeepNode Copy
+  };
+  const [selectedIndex, setSelectedIndex] = useState(initialIndex);
   const [isSubmitted, setIsSubmitted] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const t = translations[lang] || translations.tr;
 
-  const handleSelectOption = (action: () => void) => {
+  const handleSelectOption = (option: CopyPasteOption & { shortcutKey: string }) => {
     if (isSubmitted) return;
     setIsSubmitted(true);
-    action();
+    if (rememberChoice) {
+      onRememberChoice?.(option.id);
+    }
+    option.action();
   };
 
   const options: (CopyPasteOption & { shortcutKey: string })[] = [
@@ -80,6 +101,8 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       setIsSubmitted(false);
+      setIsSettingsOpen(false);
+      setSelectedIndex(initialIndex());
       try {
         window.focus();
       } catch (e) {}
@@ -90,6 +113,13 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase();
+      if (isSettingsOpen) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setIsSettingsOpen(false);
+        }
+        return;
+      }
       if (e.key === "ArrowDown") {
         e.preventDefault();
         setSelectedIndex((prev) => (prev + 1) % options.length);
@@ -100,28 +130,28 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
         e.preventDefault();
         const selected = options[selectedIndex];
         if (selected) {
-          handleSelectOption(selected.action);
+          handleSelectOption(selected);
         }
       } else if (e.key === "Escape") {
         e.preventDefault();
         onClose();
       } else if (key === "1" || key === "e") {
         e.preventDefault();
-        handleSelectOption(options[0].action);
+        handleSelectOption(options[0]);
       } else if (key === "2" || key === "c" || key === "k") {
         e.preventDefault();
-        handleSelectOption(options[1].action);
+        handleSelectOption(options[1]);
       } else if (key === "3") {
         e.preventDefault();
-        handleSelectOption(options[2].action);
+        handleSelectOption(options[2]);
       } else if (key === "4" || key === "m" || key === "t") {
         e.preventDefault();
-        handleSelectOption(options[3].action);
+        handleSelectOption(options[3]);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, selectedIndex, options, isSubmitted]);
+  }, [isOpen, selectedIndex, options, isSubmitted, isSettingsOpen]);
 
   if (!isOpen) return null;
 
@@ -140,7 +170,25 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
             {t.appTitle} - Copy &amp; Paste
           </h3>
         </div>
-        <div className="flex items-center gap-1.5 text-neutral-400" data-tauri-drag-region="false">
+        <div className="relative flex items-center gap-1.5 text-neutral-400" data-tauri-drag-region="false">
+          <button
+            onPointerDown={(e) => {
+              e.stopPropagation();
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsSettingsOpen((prev) => !prev);
+            }}
+            title={lang === "tr" ? "Seçim penceresi ayarları" : "Selection popup settings"}
+            className={`p-1 rounded transition cursor-pointer ${
+              isSettingsOpen
+                ? "text-indigo-400 bg-neutral-800"
+                : "hover:text-indigo-300 hover:bg-neutral-800"
+            }`}
+            data-tauri-drag-region="false"
+          >
+            <Settings className="w-3.5 h-3.5" />
+          </button>
           <button
             onPointerDown={(e) => {
               e.stopPropagation();
@@ -156,6 +204,41 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
           >
             <X className="w-3.5 h-3.5" />
           </button>
+
+          {isSettingsOpen && (
+            <>
+              <div
+                className="fixed inset-0 z-40"
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  setIsSettingsOpen(false);
+                }}
+                data-tauri-drag-region="false"
+              />
+              <div
+                className="absolute right-0 top-full mt-1.5 z-50 w-64 rounded-xl border border-neutral-700 bg-neutral-950/95 shadow-xl shadow-black/50 p-3"
+                onPointerDown={(e) => e.stopPropagation()}
+                data-tauri-drag-region="false"
+              >
+                <label className="flex items-start gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={rememberChoice}
+                    onChange={(e) => onChangeRememberChoice?.(e.target.checked)}
+                    className="mt-0.5 w-4 h-4 rounded bg-neutral-900 border-neutral-600 text-indigo-600 focus:ring-0 cursor-pointer"
+                  />
+                  <span className="text-xs font-semibold text-neutral-100">
+                    {lang === "tr" ? "Son seçimi hatırla" : "Remember last choice"}
+                  </span>
+                </label>
+                <p className="mt-1.5 text-[10px] leading-relaxed text-neutral-400">
+                  {lang === "tr"
+                    ? "Pencere, son kullandığın işlemi bir sonraki açılışta varsayılan olarak seçili gösterir."
+                    : "The popup preselects the action you used last time."}
+                </p>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
@@ -190,13 +273,13 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
                 if (e.button === 0) {
                   e.preventDefault();
                   e.stopPropagation();
-                  handleSelectOption(opt.action);
+                  handleSelectOption(opt);
                 }
               }}
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                handleSelectOption(opt.action);
+                handleSelectOption(opt);
               }}
               onMouseEnter={() => !isSubmitted && setSelectedIndex(idx)}
               className={`flex items-center justify-between gap-2.5 px-3 py-1.5 rounded-lg cursor-pointer transition text-left select-none ${
@@ -229,7 +312,7 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
                     : "bg-neutral-800/80 border-neutral-700 text-neutral-400"
                 }`}
               >
-                {idx === 1 ? "Enter" : opt.shortcutKey}
+                {isSelected ? "Enter" : opt.shortcutKey}
               </span>
             </div>
           );
@@ -241,7 +324,7 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
         className="px-3 py-1.5 bg-neutral-950/70 border-t border-neutral-800/80 flex items-center justify-between text-[10px] text-neutral-500 font-mono cursor-move"
         data-tauri-drag-region
       >
-        <span>1-4 / Enter: {t.copy} | Esc: {t.cancel}</span>
+        <span>1-4 / Enter | Esc: {t.cancel}</span>
         <span className="text-indigo-400">DeepNode v{packageJson.version}</span>
       </div>
     </div>

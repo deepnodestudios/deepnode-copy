@@ -22,6 +22,9 @@ import { ConflictModal } from "./components/ConflictModal";
 import { AboutModal } from "./components/AboutModal";
 import { Language, translations } from "./i18n";
 
+const POPUP_REMEMBER_KEY = "deepnode_copy_popup_remember";
+const POPUP_LAST_CHOICE_KEY = "deepnode_copy_popup_last_choice";
+
 export const App: React.FC = () => {
   const [isCompact, setIsCompact] = useState(false);
   const [transferStatus, setTransferStatus] = useState<TransferStatus>("idle");
@@ -48,6 +51,39 @@ export const App: React.FC = () => {
     setLangState(newLang);
     try {
       localStorage.setItem("deepnode_copy_lang", newLang);
+    } catch {
+      // ignore
+    }
+  };
+
+  const [rememberPopupChoice, setRememberPopupChoiceState] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(POPUP_REMEMBER_KEY) !== "false";
+    } catch {
+      return true;
+    }
+  });
+  const [lastPopupChoice, setLastPopupChoice] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(POPUP_LAST_CHOICE_KEY);
+    } catch {
+      return null;
+    }
+  });
+
+  const setRememberPopupChoice = (enabled: boolean) => {
+    setRememberPopupChoiceState(enabled);
+    try {
+      localStorage.setItem(POPUP_REMEMBER_KEY, enabled ? "true" : "false");
+    } catch {
+      // ignore
+    }
+  };
+
+  const rememberPopupSelection = (id: string) => {
+    setLastPopupChoice(id);
+    try {
+      localStorage.setItem(POPUP_LAST_CHOICE_KEY, id);
     } catch {
       // ignore
     }
@@ -1044,6 +1080,10 @@ export const App: React.FC = () => {
             handleStartTransfer("move");
           }}
           lang={lang}
+          rememberChoice={rememberPopupChoice}
+          lastChoice={lastPopupChoice}
+          onRememberChoice={rememberPopupSelection}
+          onChangeRememberChoice={setRememberPopupChoice}
         />
       ) : isCompact ? (
         <CompactView
@@ -1116,6 +1156,8 @@ export const App: React.FC = () => {
           onLangChange={setLang}
           isDraggingOver={isDraggingOver}
           onRerunSession={handleRerunSession}
+          rememberPopupChoice={rememberPopupChoice}
+          onChangeRememberPopupChoice={setRememberPopupChoice}
         />
       )}
 

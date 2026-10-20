@@ -82,6 +82,8 @@ interface ExpandedViewProps {
   onChangeHashAlgorithm: (algo: string) => void;
   directIo: boolean;
   onChangeDirectIo: (enabled: boolean) => void;
+  rememberPopupChoice: boolean;
+  onChangeRememberPopupChoice: (enabled: boolean) => void;
   stagedSources: string[];
   destination: string;
   onChangeDestination: (dest: string) => void;
@@ -525,6 +527,8 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
   onChangeHashAlgorithm,
   directIo,
   onChangeDirectIo,
+  rememberPopupChoice,
+  onChangeRememberPopupChoice,
   stagedSources,
   destination,
   onChangeDestination,
@@ -1720,6 +1724,31 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                     <option value="sleep">{lang === "tr" ? "Bilgisayarı Uyut" : "Sleep PC"}</option>
                     <option value="shutdown">{lang === "tr" ? "Bilgisayarı Kapat" : "Shutdown PC"}</option>
                   </select>
+                </div>
+
+                {/* Popup Selection Memory */}
+                <div className="p-4 rounded-2xl bg-[#0a0e1a] border border-[#172136] flex flex-col justify-between">
+                  <div>
+                    <label className="text-xs font-bold text-slate-200">
+                      {lang === "tr" ? "Seçim Penceresi" : "Selection Popup"}
+                    </label>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      {lang === "tr"
+                        ? "Kopyala / taşı penceresi son seçilen işlemi varsayılan olarak seçili gösterir (TeraCopy davranışı)."
+                        : "The copy / move popup preselects the last chosen action, like TeraCopy."}
+                    </p>
+                  </div>
+                  <label className="flex items-center gap-2 pt-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={rememberPopupChoice}
+                      onChange={(e) => onChangeRememberPopupChoice(e.target.checked)}
+                      className="w-4 h-4 rounded bg-[#121827] border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
+                    />
+                    <span className="text-xs font-semibold text-slate-200">
+                      {lang === "tr" ? "Son seçimi hatırla" : "Remember last choice"}
+                    </span>
+                  </label>
                 </div>
               </div>
 
