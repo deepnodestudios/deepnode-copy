@@ -769,7 +769,7 @@ dependencies = [
 
 [[package]]
 name = "deepnode-cli"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -784,7 +784,7 @@ dependencies = [
 
 [[package]]
 name = "deepnode-core"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "blake3",
@@ -809,7 +809,7 @@ dependencies = [
 
 [[package]]
 name = "deepnode-db"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "chrono",
  "deepnode-core",
@@ -823,7 +823,7 @@ dependencies = [
 
 [[package]]
 name = "deepnode-gui"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "chrono",
  "deepnode-core",
@@ -845,7 +845,7 @@ dependencies = [
 
 [[package]]
 name = "deepnode-shell"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "chrono",
  "deepnode-core",
