@@ -92,6 +92,8 @@ fn recombine_split_paths(tokens: &[String]) -> Vec<String> {
         let mut best_j = i;
 
         let has_star = tokens[i].starts_with('*');
+        let base = if has_star { tokens[i].trim_start_matches('*') } else { tokens[i].as_str() };
+        let base_exists = sanitize_path(base).exists();
         let mut candidate = tokens[i].clone();
         let mut j = i + 1;
         while j < tokens.len() {
@@ -107,7 +109,14 @@ fn recombine_split_paths(tokens: &[String]) -> Vec<String> {
                 &candidate
             };
             let p = sanitize_path(check_path);
-            if p.exists() || (p.parent().map(|par| par.exists()).unwrap_or(false) && p.is_absolute()) {
+            if p.exists() {
+                best_combined = candidate.clone();
+                best_j = j;
+                break;
+            }
+            // An existing path is already complete; absorbing the next argument (e.g. a
+            // `*deepnode_list_*.tmp` followed by the destination) corrupts both.
+            if !base_exists && p.parent().map(|par| par.exists()).unwrap_or(false) && p.is_absolute() {
                 best_combined = candidate.clone();
                 best_j = j;
             }
@@ -3913,5 +3922,75 @@ fn check_single_instance(raw_args: &[String]) -> bool {
         Ok(Ok(_)) => log_engine("Tauri application exited cleanly"),
         Ok(Err(e)) => log_engine(&format!("Tauri application run error: {:?}", e)),
         Err(panic) => log_engine(&format!("Tauri application panicked in run: {:?}", panic)),
+    }
+}
+
+#[cfg(test)]
+mod cli_args_tests {
+    use super::*;
+
+    fn args(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn list_file_and_destination_stay_separate() {
+        let list = std::env::temp_dir().join(format!("deepnode_list_{}.tmp", uuid::Uuid::new_v4()));
+        let source = std::env::temp_dir().join("source file.mp4");
+        std::fs::write(&list, format!("{}\n", source.display())).unwrap();
+
+        let star = format!("*{}", list.display());
+        let parsed = parse_cli_args(&args(&["deepnode-gui.exe", "--popup", "--pos", "10,20", "--mode", "copy", &star, "D:\\"]));
+
+        assert!(parsed.is_popup);
+        assert_eq!(parsed.sources, vec![source.to_string_lossy().to_string()]);
+        assert_eq!(parsed.destination.as_deref(), Some("D:\\"));
+        assert!(!list.exists(), "the temporary list file must be consumed");
+    }
+
+    #[test]
+    fn consecutive_existing_sources_stay_separate() {
+        let dir = std::env::temp_dir().join(format!("deepnode_src_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("a.txt");
+        let second = dir.join("b.txt");
+        std::fs::write(&first, b"a").unwrap();
+        std::fs::write(&second, b"b").unwrap();
+
+        let parsed = parse_cli_args(&args(&[
+            "deepnode-gui.exe",
+            "--popup",
+            "--source",
+            &first.to_string_lossy(),
+            &second.to_string_lossy(),
+            "--target",
+            "D:\\",
+        ]));
+
+        assert_eq!(
+            parsed.sources,
+            vec![first.to_string_lossy().to_string(), second.to_string_lossy().to_string()]
+        );
+        assert_eq!(parsed.destination.as_deref(), Some("D:\\"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn split_path_with_spaces_is_recombined() {
+        let dir = std::env::temp_dir().join(format!("deepnode_split_{}", uuid::Uuid::new_v4()));
+        let spaced = dir.join("My Folder");
+        std::fs::create_dir_all(&spaced).unwrap();
+        let file = spaced.join("report.txt");
+        std::fs::write(&file, b"x").unwrap();
+
+        let full = file.to_string_lossy().to_string();
+        let (head, tail) = full.split_once(' ').unwrap();
+        let parsed = parse_cli_args(&args(&["deepnode-gui.exe", "--popup", head, tail, "D:\\"]));
+
+        assert_eq!(parsed.sources, vec![full]);
+        assert_eq!(parsed.destination.as_deref(), Some("D:\\"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
