@@ -385,12 +385,82 @@ async fn test_coordinator_conflict_resolution_skip() {
         }
     }
 
-    let stats_res = coordinator_handle.await.unwrap();
-    assert!(stats_res.is_ok());
+    let stats = coordinator_handle.await.unwrap().unwrap();
     assert!(file_skipped_event);
+    assert_eq!(stats.skipped_files, 1);
+    assert_eq!(stats.total_files, 0, "A skipped file must not remain in the progress total");
+    assert_eq!(stats.total_bytes, 0);
+    assert!((stats.overall_percentage - 100.0).abs() < 0.01);
 
     let content = std::fs::read_to_string(&dst_file).unwrap();
     assert_eq!(content, "OLD DEST CONTENT");
+}
+
+#[tokio::test]
+async fn test_removed_queued_file_is_skipped_and_excluded_from_totals() {
+    use deepnode_core::engine::config::{TransferConfig, VerifyMode};
+    use deepnode_core::engine::coordinator::TransferCoordinator;
+    use deepnode_core::engine::events::EngineEvent;
+    use deepnode_core::engine::item::FileItem;
+    use std::collections::HashSet;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    let dir = tempdir().unwrap();
+    let removed_src = dir.path().join("removed.bin");
+    let kept_src = dir.path().join("kept.bin");
+    std::fs::write(&removed_src, vec![0x11; 100]).unwrap();
+    std::fs::write(&kept_src, vec![0x22; 500]).unwrap();
+
+    let removed_dst = dir.path().join("removed_dst.bin");
+    let kept_dst = dir.path().join("kept_dst.bin");
+
+    let items = vec![
+        FileItem::new(1, removed_src, removed_dst.clone(), std::path::PathBuf::from("removed_dst.bin"), 100),
+        FileItem::new(2, kept_src, kept_dst.clone(), std::path::PathBuf::from("kept_dst.bin"), 500),
+    ];
+
+    let mut skipped_ids = HashSet::new();
+    skipped_ids.insert(1);
+
+    let mut config = TransferConfig::default();
+    config.verify_mode = VerifyMode::Never;
+
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let mut coordinator = TransferCoordinator::new(
+        config,
+        items,
+        event_tx,
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    coordinator.set_skip_controls(
+        Arc::new(AtomicBool::new(false)),
+        Some(Arc::new(std::sync::Mutex::new(skipped_ids))),
+    );
+
+    let handle = tokio::spawn(async move { coordinator.run().await });
+
+    let mut completed_stats = None;
+    while let Some(event) = event_rx.recv().await {
+        if let EngineEvent::TransferCompleted(stats) = event {
+            completed_stats = Some(stats);
+        }
+    }
+    let stats = handle.await.unwrap().unwrap();
+    let completed_stats = completed_stats.expect("TransferCompleted must be emitted");
+
+    assert!(!removed_dst.exists(), "Removed queued file must not be copied");
+    assert!(kept_dst.exists(), "Remaining queued file must still be copied");
+
+    assert_eq!(stats.skipped_files, 1);
+    assert_eq!(stats.completed_files, 1);
+    assert_eq!(stats.total_files, 1, "Removed file must be dropped from the total");
+    assert_eq!(stats.total_bytes, 500, "Removed file bytes must be dropped from the total");
+    assert!((stats.overall_percentage - 100.0).abs() < 0.01, "Progress must reach 100% after removal");
+    assert_eq!(completed_stats.total_files, 1);
+    assert_eq!(completed_stats.overall_percentage, 100.0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1398,6 +1468,12 @@ async fn test_retry_failed_only_excludes_skipped_items() {
 
     assert_eq!(skipped_items.len(), 1);
     assert_eq!(skipped_items[0].id, 2);
+
+    // Retry must include both failed and skipped items, never completed ones.
+    let retryable = coordinator.get_retryable_items();
+    assert_eq!(retryable.len(), 2);
+    assert_eq!(retryable[0].id, 1);
+    assert_eq!(retryable[1].id, 2);
 }
 
 #[tokio::test]

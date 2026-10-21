@@ -80,7 +80,17 @@ impl FileScanner {
         if clean_src.is_file() {
             let filename = clean_src.file_name().unwrap_or_default();
             let dst_file = destination.join(filename);
-            let size = clean_src.metadata().map(|m| m.len()).unwrap_or(0);
+            if same_path(&dst_file, &clean_src) {
+                return Err(crate::error::TransferError::InvalidPath(format!(
+                    "Kaynak ve hedef aynı dosya: {:?}",
+                    clean_src
+                )));
+            }
+            let size = clean_src.metadata().map(|m| m.len()).map_err(|e| {
+                crate::error::TransferError::Io(format!(
+                    "Failed to read metadata for {:?}: {}", clean_src, e
+                ))
+            })?;
 
             items.push(FileItem::new(
                 *id_counter,
@@ -91,17 +101,35 @@ impl FileScanner {
             ));
             *id_counter += 1;
         } else if clean_src.is_dir() {
+            if is_same_or_within(destination, &clean_src) {
+                return Err(crate::error::TransferError::InvalidPath(format!(
+                    "Hedef klasör kaynak klasörün içinde olamaz: {:?} -> {:?}",
+                    clean_src, destination
+                )));
+            }
+
             let dir_name = clean_src.file_name().unwrap_or_default();
             let mut found_any_file = false;
 
-            for entry in walkdir::WalkDir::new(&clean_src).into_iter().flatten() {
+            for entry_res in walkdir::WalkDir::new(&clean_src) {
+                let entry = entry_res.map_err(|e| {
+                    crate::error::TransferError::Io(format!(
+                        "Failed to scan source directory {:?}: {}",
+                        e.path().map(|p| p.to_path_buf()).unwrap_or_else(|| clean_src.clone()),
+                        e
+                    ))
+                })?;
                 let entry_path = entry.path();
                 if entry_path.is_file() {
                     found_any_file = true;
                     if let Ok(rel) = entry_path.strip_prefix(&clean_src) {
                         let rel_with_dir = std::path::Path::new(dir_name).join(rel);
                         let dst_file = destination.join(&rel_with_dir);
-                        let size = entry_path.metadata().map(|m| m.len()).unwrap_or(0);
+                        let size = entry_path.metadata().map(|m| m.len()).map_err(|e| {
+                            crate::error::TransferError::Io(format!(
+                                "Failed to read metadata for {:?}: {}", entry_path, e
+                            ))
+                        })?;
 
                         items.push(FileItem::new(
                             *id_counter,
@@ -132,4 +160,32 @@ impl FileScanner {
 
         Ok(())
     }
+}
+
+fn normalize_for_compare(path: &Path) -> String {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let mut s = absolute
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_lowercase();
+    while s.len() > 3 && s.ends_with('\\') {
+        s.pop();
+    }
+    s
+}
+
+fn same_path(a: &Path, b: &Path) -> bool {
+    normalize_for_compare(a) == normalize_for_compare(b)
+}
+
+fn is_same_or_within(child: &Path, parent: &Path) -> bool {
+    let child = normalize_for_compare(child);
+    let parent = normalize_for_compare(parent);
+    child == parent || child.starts_with(&format!("{}\\", parent))
 }

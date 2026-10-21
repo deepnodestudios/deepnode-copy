@@ -17,6 +17,10 @@ try {
     Copy-Item "target\release\deepnode_shell.dll" "bin\deepnode_shell.dll" -Force
     & (Join-Path $PSScriptRoot "sign_file.ps1") (Join-Path $root "bin\deepnode_shell.dll")
 
+    # Build and sign the sparse MSIX before bundling so Tauri ships it as a resource.
+    & (Join-Path $PSScriptRoot "build_sparse_package.ps1") -BuildOnly
+    if ($LASTEXITCODE -ne 0) { throw "sparse MSIX oluşturulamadı" }
+
     npx tauri build
     if ($LASTEXITCODE -ne 0) { throw "tauri build başarısız" }
 

@@ -11,10 +11,10 @@
   IgnorableNamespaces="desktop10">
 
   <Identity Name="DeepNodeCopy" ProcessorArchitecture="x64" 
-    Publisher="CN=DeepNode Software, O=DeepNode Team, C=TR" 
-    Version="0.2.4.0"/>  
+    Publisher="CN=DeepNode Studios" 
+    Version="0.3.5.0"/>  
   <Properties>
-    <PublisherDisplayName>DeepNode Software</PublisherDisplayName>
+    <PublisherDisplayName>DeepNode Studios</PublisherDisplayName>
     <DisplayName>DeepNode Copy Shell Extension</DisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
     <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
@@ -34,7 +34,7 @@
   <Applications>
     <Application 
       Id="DeepNode.Copy"
-      Executable="DeepNodeCopy.exe"
+      Executable="deepnode-gui.exe"
       uap10:RuntimeBehavior="win32App"
       uap10:TrustLevel="mediumIL">
       <uap:VisualElements 

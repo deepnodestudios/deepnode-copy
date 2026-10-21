@@ -138,6 +138,7 @@ fn parse_cli_args(args: &[String]) -> LaunchArgs {
     let mut sources = Vec::new();
     let mut destination = None;
     let mut mode = "copy".to_string();
+    let mut mode_explicit = false;
     let mut is_popup = false;
     let mut is_silent = false;
     let mut auto_start = false;
@@ -151,10 +152,12 @@ fn parse_cli_args(args: &[String]) -> LaunchArgs {
 
         if first == "copy" {
             mode = "copy".to_string();
+            mode_explicit = true;
             auto_start = true;
             idx = 2;
         } else if first == "move" {
             mode = "move".to_string();
+            mode_explicit = true;
             auto_start = true;
             idx = 2;
         }
@@ -183,6 +186,7 @@ fn parse_cli_args(args: &[String]) -> LaunchArgs {
                 r_idx += 1;
             } else if arg.eq_ignore_ascii_case("--mode") && r_idx + 1 < recombined.len() {
                 mode = clean_path_str(&recombined[r_idx + 1]);
+                mode_explicit = true;
                 r_idx += 1;
             } else if arg.eq_ignore_ascii_case("--target") && r_idx + 1 < recombined.len() {
                 let target_cleaned = clean_path_str(&recombined[r_idx + 1]);
@@ -288,10 +292,13 @@ fn parse_cli_args(args: &[String]) -> LaunchArgs {
     if destination.is_some() && sources.is_empty() {
         #[cfg(target_os = "windows")]
         {
-            let clip_files = get_clipboard_hdrop_files();
+            let (clip_files, clip_is_move) = get_clipboard_hdrop_info();
             if !clip_files.is_empty() {
                 sources = clip_files;
                 is_popup = true;
+                if !mode_explicit {
+                    mode = if clip_is_move { "move" } else { "copy" }.to_string();
+                }
             }
         }
     }
@@ -373,17 +380,10 @@ async fn resume_transfer(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
-fn cleanup_partial_files_slice(files: &[FileItem], dest_dir: Option<&Path>) {
-    for file in files {
-        if file.status != FileItemStatus::Completed
-            && (file.bytes_transferred > 0 || file.status == FileItemStatus::Copying)
-            && file.dst_path.exists()
-        {
-            log_engine(&format!("Cleaning up incomplete partial file: {:?}", file.dst_path));
-            let ok = deepnode_core::io::copier::cleanup_cancelled_file_and_empty_parents(&file.dst_path, dest_dir);
-            log_engine(&format!("Incomplete file {:?} deletion result: {}", file.dst_path, ok));
-        }
-    }
+fn cleanup_partial_files_slice(_files: &[FileItem], _dest_dir: Option<&Path>) {
+    // Atomic copies write to a .dnpart-* temporary sibling, which the copier removes on
+    // cancel/error and replaces atomically on success. The final dst_path must never be
+    // deleted here: it may be a pre-existing file that the failed copy preserved.
 }
 
 async fn cleanup_partial_transfers(state: &AppState) {
@@ -593,12 +593,19 @@ fn open_folder(path: String) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-fn get_clipboard_hdrop_files() -> Vec<String> {
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+fn get_clipboard_hdrop_info() -> (Vec<String>, bool) {
+    use windows::Win32::Foundation::{HGLOBAL, HWND};
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, GetClipboardData, OpenClipboard, RegisterClipboardFormatW,
+    };
+    use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
     use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 
+    const CF_HDROP: u32 = 15;
+    const DROPEFFECT_MOVE: u32 = 2;
+
     let mut files = Vec::new();
+    let mut is_move = false;
     unsafe {
         let mut opened = false;
         for _ in 0..6 {
@@ -609,7 +616,7 @@ fn get_clipboard_hdrop_files() -> Vec<String> {
             std::thread::sleep(std::time::Duration::from_millis(15));
         }
         if opened {
-            if let Ok(handle) = GetClipboardData(15) { // CF_HDROP = 15
+            if let Ok(handle) = GetClipboardData(CF_HDROP) {
                 if !handle.0.is_null() {
                     let hdrop = HDROP(handle.0);
                     let count = DragQueryFileW(hdrop, 0xFFFFFFFF, None);
@@ -627,17 +634,35 @@ fn get_clipboard_hdrop_files() -> Vec<String> {
                     }
                 }
             }
+
+            // Explorer stores whether the cut (Ctrl+X) or copied (Ctrl+C) data is on the
+            // clipboard in the "Preferred DropEffect" format.
+            let format = RegisterClipboardFormatW(windows::core::w!("Preferred DropEffect"));
+            if format != 0 {
+                if let Ok(handle) = GetClipboardData(format) {
+                    if !handle.0.is_null() {
+                        let hglobal = HGLOBAL(handle.0);
+                        let ptr = GlobalLock(hglobal);
+                        if !ptr.is_null() {
+                            let effect = std::ptr::read_unaligned(ptr as *const u32);
+                            is_move = (effect & DROPEFFECT_MOVE) != 0;
+                        }
+                        let _ = GlobalUnlock(hglobal);
+                    }
+                }
+            }
+
             let _ = CloseClipboard();
         }
     }
-    files
+    (files, is_move)
 }
 
 #[tauri::command]
 fn get_clipboard_files() -> Vec<String> {
     #[cfg(target_os = "windows")]
     {
-        get_clipboard_hdrop_files()
+        get_clipboard_hdrop_info().0
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -674,7 +699,7 @@ fn force_window_to_foreground(window: &tauri::WebviewWindow) {
 }
 
 /// Logical size of the copy/paste choice popup.
-const POPUP_SIZE: (f64, f64) = (480.0, 320.0);
+const POPUP_SIZE: (f64, f64) = (480.0, 220.0);
 
 #[cfg(target_os = "windows")]
 /// Sizes the choice popup and places it like TeraCopy's "Paste Window": the visible window's
@@ -768,7 +793,7 @@ fn place_popup_window(window: &tauri::WebviewWindow, anchor: Option<(i32, i32)>)
 }
 
 #[cfg(target_os = "windows")]
-fn trigger_explorer_popup(app: AppHandle, sources: Vec<String>, destination: String, anchor: Option<(i32, i32)>) {
+fn trigger_explorer_popup(app: AppHandle, sources: Vec<String>, destination: String, anchor: Option<(i32, i32)>, mode: String) {
     if sources.is_empty() {
         return;
     }
@@ -799,10 +824,12 @@ fn trigger_explorer_popup(app: AppHandle, sources: Vec<String>, destination: Str
             struct PastePopupPayload {
                 sources: Vec<String>,
                 destination: String,
+                mode: String,
             }
             let payload = PastePopupPayload {
                 sources,
                 destination: dest_final,
+                mode,
             };
             let _ = window.emit("open_copy_paste_modal", payload);
         }
@@ -964,7 +991,7 @@ fn handle_forwarded_cli_args(app: &AppHandle, state: &Arc<AppState>, args: &[Str
 
     if launch_args.is_popup && !launch_args.sources.is_empty() {
         let dest = launch_args.destination.unwrap_or_default();
-        trigger_explorer_popup(app.clone(), launch_args.sources, dest, launch_args.popup_anchor);
+        trigger_explorer_popup(app.clone(), launch_args.sources, dest, launch_args.popup_anchor, launch_args.mode);
     } else if launch_args.auto_start && launch_args.destination.is_some() && !launch_args.sources.is_empty() {
         let dest = launch_args.destination.unwrap();
         let on_fin = launch_args.on_finish.unwrap_or_else(|| "do_nothing".to_string());
@@ -1019,7 +1046,7 @@ fn handle_forwarded_cli_args(app: &AppHandle, state: &Arc<AppState>, args: &[Str
 #[cfg(target_os = "windows")]
 fn start_ipc_pipe_server(app: AppHandle, state: Arc<AppState>) {
     tauri::async_runtime::spawn(async move {
-        use tokio::io::{AsyncBufReadExt, BufReader};
+        use tokio::io::AsyncReadExt;
         use tokio::net::windows::named_pipe::ServerOptions;
 
         let pipe_name = r"\\.\pipe\deepnode_copy_ipc";
@@ -1028,6 +1055,7 @@ fn start_ipc_pipe_server(app: AppHandle, state: Arc<AppState>) {
         loop {
             let server_res = ServerOptions::new()
                 .first_pipe_instance(first)
+                .reject_remote_clients(true)
                 .create(pipe_name);
 
             let server = match server_res {
@@ -1042,19 +1070,57 @@ fn start_ipc_pipe_server(app: AppHandle, state: Arc<AppState>) {
                 }
             };
 
-            if server.connect().await.is_ok() {
-                let mut reader = BufReader::new(server);
-                let mut line = String::new();
-                if reader.read_line(&mut line).await.is_ok() {
-                    let trimmed = line.trim();
-                    if let Ok(forwarded_args) = serde_json::from_str::<Vec<String>>(trimmed) {
-                        log_engine(&format!("IPC Named Pipe received arguments from secondary instance: {:?}", forwarded_args));
-                        let app_clone = app.clone();
-                        let state_clone = Arc::clone(&state);
-                        let _ = app.run_on_main_thread(move || {
-                            handle_forwarded_cli_args(&app_clone, &state_clone, &forwarded_args);
-                        });
-                    }
+            let mut server = match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                server.connect(),
+            )
+            .await
+            {
+                Ok(Ok(())) => server,
+                _ => continue,
+            };
+
+            // Bound the request so a local client cannot block the single-instance pipe or
+            // exhaust memory by connecting and streaming forever.
+            let mut buf: Vec<u8> = Vec::with_capacity(512);
+            let mut chunk = [0u8; 4096];
+            let mut too_long = false;
+            loop {
+                let n = match tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    server.read(&mut chunk),
+                )
+                .await
+                {
+                    Ok(Ok(n)) => n,
+                    _ => break,
+                };
+                if n == 0 {
+                    break;
+                }
+                let newline = chunk[..n].iter().position(|&b| b == b'\n');
+                let take = newline.map(|i| i + 1).unwrap_or(n);
+                buf.extend_from_slice(&chunk[..take]);
+                if buf.len() > 64 * 1024 {
+                    too_long = true;
+                    break;
+                }
+                if newline.is_some() {
+                    break;
+                }
+            }
+            if too_long {
+                log_engine("IPC Named Pipe request rejected: payload exceeded 64 KiB");
+                continue;
+            }
+            if let Ok(text) = std::str::from_utf8(&buf) {
+                if let Ok(forwarded_args) = serde_json::from_str::<Vec<String>>(text.trim()) {
+                    log_engine(&format!("IPC Named Pipe received arguments from secondary instance: {:?}", forwarded_args));
+                    let app_clone = app.clone();
+                    let state_clone = Arc::clone(&state);
+                    let _ = app.run_on_main_thread(move || {
+                        handle_forwarded_cli_args(&app_clone, &state_clone, &forwarded_args);
+                    });
                 }
             }
         }
@@ -1062,18 +1128,24 @@ fn start_ipc_pipe_server(app: AppHandle, state: Arc<AppState>) {
 }
 
 #[tauri::command]
-fn explorer_copy(sources: Vec<String>, destination: String) -> Result<(), String> {
+fn explorer_copy(sources: Vec<String>, destination: String, mode: Option<String>) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use windows::Win32::Foundation::{BOOL, HWND};
         use windows::Win32::UI::Shell::{
-            SHFileOperationW, SHFILEOPSTRUCTW, FOF_ALLOWUNDO, FOF_NOCONFIRMMKDIR, FO_COPY,
+            SHFileOperationW, SHFILEOPSTRUCTW, FOF_ALLOWUNDO, FOF_NOCONFIRMMKDIR, FO_COPY, FO_MOVE,
         };
         use windows::core::PCWSTR;
 
         if sources.is_empty() || destination.is_empty() {
             return Err("Kaynak dosyalar veya hedef klasör belirtilmedi.".to_string());
         }
+
+        let move_files = mode.as_deref() == Some("move");
+
+        // Selected explicitly by the user: keep the CopyHook extension from intercepting
+        // this operation again and reopening the popup.
+        let _suppression = deepnode_core::shell_suppress::CopyHookSuppression::activate();
 
         let mut from_wide: Vec<u16> = Vec::new();
         for src in &sources {
@@ -1089,7 +1161,7 @@ fn explorer_copy(sources: Vec<String>, destination: String) -> Result<(), String
         unsafe {
             let mut op = SHFILEOPSTRUCTW {
                 hwnd: HWND::default(),
-                wFunc: FO_COPY,
+                wFunc: if move_files { FO_MOVE } else { FO_COPY },
                 pFrom: PCWSTR(from_wide.as_ptr()),
                 pTo: PCWSTR(to_wide.as_ptr()),
                 fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR).0 as u16,
@@ -1099,14 +1171,18 @@ fn explorer_copy(sources: Vec<String>, destination: String) -> Result<(), String
             };
             let res = SHFileOperationW(&mut op);
             if res != 0 {
-                return Err(format!("Windows Gezgini kopyalama hatası kodu: {}", res));
+                let action = if move_files { "taşıma" } else { "kopyalama" };
+                return Err(format!("Windows Gezgini {} hatası kodu: {}", action, res));
+            }
+            if op.fAnyOperationsAborted.as_bool() {
+                return Err("Windows Gezgini işlemi iptal edildi".to_string());
             }
         }
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (sources, destination);
+        let _ = (sources, destination, mode);
         Ok(())
     }
 }
@@ -1513,38 +1589,47 @@ async fn register_shell_context_menu(_app: AppHandle, lang: Option<String>) -> R
         }
     }
 
-    // 7. Windows 11 Modern Context Menu (Sparse Package) if manifest exists
+    // 7. Windows 11 Modern Context Menu. The signed sparse MSIX works without developer mode;
+    // loose manifest registration remains as a fallback for development layouts.
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     if let Some(exe_dir) = exe.parent() {
-        let manifest_candidates = [
-            exe_dir.join("AppxManifest.xml"),
-            exe_dir.join("resources").join("AppxManifest.xml"),
-            exe_dir.join("resources").join("bin").join("AppxManifest.xml"),
-            exe_dir.join("bin").join("AppxManifest.xml"),
-            exe_dir.parent().map(|p| p.join("bin").join("AppxManifest.xml")).unwrap_or_default(),
+        let msix_candidates = [
+            exe_dir.join("DeepNodeCopy.msix"),
+            exe_dir.join("resources").join("DeepNodeCopy.msix"),
+            exe_dir.join("resources").join("bin").join("DeepNodeCopy.msix"),
+            exe_dir.join("bin").join("DeepNodeCopy.msix"),
+            exe_dir.join("_up_").join("bin").join("DeepNodeCopy.msix"),
+            exe_dir.parent().map(|p| p.join("bin").join("DeepNodeCopy.msix")).unwrap_or_default(),
         ];
-        if let Some(manifest) = manifest_candidates.iter().find(|p| p.exists()) {
-            let manifest_dir = manifest.parent().unwrap_or(exe_dir);
-            let cer_path = manifest_dir.join("DeepNodePublic.cer");
-            if cer_path.exists() {
+        let mut registered = false;
+        if let Some(msix) = msix_candidates.iter().find(|p| p.exists()) {
+            let cer = msix.parent().unwrap_or(exe_dir).join("DeepNodePublic.cer");
+            let cer = if cer.exists() { cer } else { exe_dir.join("DeepNodePublic.cer") };
+            registered = register_signed_sparse_package(msix, exe_dir, &cer);
+        }
+
+        if !registered {
+            let manifest_candidates = [
+                exe_dir.join("AppxManifest.xml"),
+                exe_dir.join("resources").join("AppxManifest.xml"),
+                exe_dir.join("resources").join("bin").join("AppxManifest.xml"),
+                exe_dir.join("bin").join("AppxManifest.xml"),
+                exe_dir.join("_up_").join("bin").join("AppxManifest.xml"),
+                exe_dir.parent().map(|p| p.join("bin").join("AppxManifest.xml")).unwrap_or_default(),
+            ];
+            if let Some(manifest) = manifest_candidates.iter().find(|p| p.exists()) {
+                let (manifest, external_dir) = prepare_sparse_layout(manifest, exe_dir);
+                import_trusted_shell_certificate(&external_dir.join("DeepNodePublic.cer"));
                 let _ = std::process::Command::new("powershell")
                     .args([
                         "-NoProfile",
                         "-Command",
-                        &format!("Import-Certificate -FilePath '{}' -CertStoreLocation 'Cert:\\CurrentUser\\TrustedPeople' -ErrorAction SilentlyContinue", cer_path.display()),
+                        &format!("Add-AppxPackage -Path '{}' -Register -ExternalLocation '{}' -ErrorAction SilentlyContinue", manifest.display(), external_dir.display()),
                     ])
                     .creation_flags(CREATE_NO_WINDOW)
                     .output();
             }
-            let _ = std::process::Command::new("powershell")
-                .args([
-                    "-NoProfile",
-                    "-Command",
-                    &format!("Add-AppxPackage -Path '{}' -Register -ExternalLocation '{}' -ErrorAction SilentlyContinue", manifest.display(), manifest_dir.display()),
-                ])
-                .creation_flags(CREATE_NO_WINDOW)
-                .output();
         }
     }
 
@@ -1923,7 +2008,7 @@ fn spawn_transfer_worker(
                     log_engine("worker thread calling coordinator.run()...");
                     let stats_result = coordinator.run().await;
                     let failed_items = coordinator.get_failed_items();
-                    *last_failed.lock().await = failed_items.clone();
+                    *last_failed.lock().await = coordinator.get_retryable_items();
                     log_engine(&format!(
                         "coordinator.run completed: stats_result={:?}",
                         stats_result.as_ref().map(|s| (s.completed_files, s.total_files, s.transferred_bytes))
@@ -2055,6 +2140,98 @@ fn spawn_transfer_worker(
     })
 }
 
+fn path_is_same_or_within(path: &Path, root: &Path) -> bool {
+    let normalize = |p: &Path| p.to_string_lossy().replace('/', "\\").to_lowercase();
+    let path_n = normalize(path);
+    let root_n = normalize(root);
+    let root_n = root_n.trim_end_matches('\\');
+    path_n == root_n || path_n.starts_with(&format!("{}\\", root_n))
+}
+
+/// Tauri ships resources under `_up_\bin`, but a sparse package needs the manifest, assets,
+/// COM DLL and executable in one external location. Copy the bundle next to the exe when
+/// possible, otherwise report the manifest's own directory.
+fn prepare_sparse_layout(manifest: &Path, exe_dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let manifest_dir = manifest.parent().unwrap_or(exe_dir);
+    if manifest_dir == exe_dir {
+        return (manifest.to_path_buf(), exe_dir.to_path_buf());
+    }
+
+    let dest_manifest = exe_dir.join("AppxManifest.xml");
+    if std::fs::copy(manifest, &dest_manifest).is_err() {
+        return (manifest.to_path_buf(), manifest_dir.to_path_buf());
+    }
+
+    let src_assets = manifest_dir.join("Assets");
+    if let Ok(entries) = std::fs::read_dir(&src_assets) {
+        let dst_assets = exe_dir.join("Assets");
+        let _ = std::fs::create_dir_all(&dst_assets);
+        for entry in entries.flatten() {
+            if entry.path().is_file() {
+                let _ = std::fs::copy(entry.path(), dst_assets.join(entry.file_name()));
+            }
+        }
+    }
+
+    let src_cer = manifest_dir.join("DeepNodePublic.cer");
+    if src_cer.exists() {
+        let _ = std::fs::copy(&src_cer, exe_dir.join("DeepNodePublic.cer"));
+    }
+
+    let src_dll = manifest_dir.join("deepnode_shell.dll");
+    let dst_dll = exe_dir.join("deepnode_shell.dll");
+    if src_dll.exists() && !dst_dll.exists() {
+        let _ = std::fs::copy(&src_dll, &dst_dll);
+    }
+
+    (dest_manifest, exe_dir.to_path_buf())
+}
+
+fn import_trusted_shell_certificate(cer_path: &Path) {
+    if !cer_path.exists() {
+        return;
+    }
+    use std::os::windows::process::CommandExt;
+    let _ = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "Import-Certificate -FilePath '{}' -CertStoreLocation 'Cert:\\CurrentUser\\TrustedPeople' -ErrorAction SilentlyContinue",
+                cer_path.display()
+            ),
+        ])
+        .creation_flags(0x08000000)
+        .output();
+}
+
+/// Registers the signed sparse MSIX so the Windows 11 top-level context menu works without
+/// developer mode. Migrates away from packages signed by an older publisher if needed.
+fn register_signed_sparse_package(msix: &Path, external_dir: &Path, cer_path: &Path) -> bool {
+    use std::os::windows::process::CommandExt;
+    import_trusted_shell_certificate(cer_path);
+
+    let script = format!(
+        "$pkg = Get-AppxPackage -Name DeepNodeCopy -ErrorAction SilentlyContinue; \
+         if ($pkg -and $pkg.Publisher -and $pkg.Publisher -ne 'CN=DeepNode Studios') {{ Remove-AppxPackage -Package $pkg.PackageFullName -ErrorAction SilentlyContinue }}; \
+         Add-AppxPackage -Path '{}' -ExternalLocation '{}' -ErrorAction SilentlyContinue; \
+         $pkg = Get-AppxPackage -Name DeepNodeCopy -ErrorAction SilentlyContinue; \
+         if (-not $pkg) {{ Get-AppxPackage -Name DeepNodeCopy -ErrorAction SilentlyContinue | Remove-AppxPackage -ErrorAction SilentlyContinue; Add-AppxPackage -Path '{}' -ExternalLocation '{}' -ErrorAction SilentlyContinue; $pkg = Get-AppxPackage -Name DeepNodeCopy -ErrorAction SilentlyContinue }}; \
+         if ($pkg) {{ exit 0 }} else {{ exit 1 }}",
+        msix.display(),
+        external_dir.display(),
+        msix.display(),
+        external_dir.display()
+    );
+
+    std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .creation_flags(0x08000000)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn start_transfer(
@@ -2068,6 +2245,7 @@ async fn start_transfer(
     conflict_policy: Option<String>,
     direct_io: Option<bool>,
     on_finish: Option<String>,
+    exclude_paths: Option<Vec<String>>,
 ) -> Result<StartTransferResult, String> {
     {
         let mut cur = state.transfer_state.lock().await;
@@ -2154,7 +2332,7 @@ async fn start_transfer(
     .await
     .map_err(|e| e.to_string())?;
 
-    let items = match scan_res {
+    let mut items = match scan_res {
         Ok(items) if !items.is_empty() => items,
         Ok(_) => {
             let mut cur = state.transfer_state.lock().await;
@@ -2167,6 +2345,24 @@ async fn start_transfer(
             return Err(e.to_string());
         }
     };
+
+    let exclusions: Vec<PathBuf> = exclude_paths
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|p| validate_filesystem_path(&clean_path_str(p)).ok())
+        .collect();
+    if !exclusions.is_empty() {
+        items.retain(|item| {
+            !exclusions
+                .iter()
+                .any(|excluded| path_is_same_or_within(&item.src_path, excluded))
+        });
+        if items.is_empty() {
+            let mut cur = state.transfer_state.lock().await;
+            cur.status = "idle".to_string();
+            return Err("Kuyruktaki tüm dosyalar listeden çıkarıldı".to_string());
+        }
+    }
 
     let t_mode = match mode.as_deref().unwrap_or("copy") {
         "move" => TransferMode::Move,
@@ -2429,9 +2625,15 @@ fn verify_installer_authenticode(path: &Path) -> Result<(), String> {
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
     let path_str = path.to_string_lossy().to_string();
+    // Pin the release signing certificate by thumbprint. A subject substring alone would
+    // accept any attacker-generated self-signed certificate that merely says "DeepNode".
+    // NotTrusted/UnknownError are allowed because end-user machines do not install our
+    // self-signed root; the exact certificate identity plus the Authenticode hash check
+    // (HashMismatch/NotSigned are rejected) is what proves the installer came from us.
     let ps_cmd = format!(
         "$sig = Get-AuthenticodeSignature -FilePath '{}'; \
-         if ($sig.Status -eq 'Valid' -or ($sig.SignerCertificate -ne $null -and $sig.SignerCertificate.Subject -like '*DeepNode*')) {{ \
+         $pinned = '548A57C15C1AAAACAC7EDE40AE73042D42295EC9'; \
+         if ($sig.SignerCertificate -ne $null -and $sig.SignerCertificate.Thumbprint -eq $pinned -and $sig.Status -ne 'HashMismatch' -and $sig.Status -ne 'NotSigned') {{ \
              exit 0 \
          }} else {{ \
              exit 1 \
@@ -3654,10 +3856,13 @@ fn check_single_instance(raw_args: &[String]) -> bool {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         if !sent {
+            // Losing the user's copy/move is worse than a second window: if the primary
+            // instance's pipe is stuck, continue as an independent instance.
             log_engine(&format!(
-                "WARNING: Failed to forward arguments to primary instance after 15 attempts. Exiting cleanly (PID: {}).",
+                "WARNING: Failed to forward arguments to primary instance after 15 attempts. Starting standalone instance instead (PID: {}).",
                 std::process::id()
             ));
+            return true;
         }
         return false;
     }
@@ -3992,5 +4197,19 @@ mod cli_args_tests {
         assert_eq!(parsed.destination.as_deref(), Some("D:\\"));
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn exclusion_matches_same_path_child_and_case() {
+        use std::path::Path;
+
+        assert!(path_is_same_or_within(Path::new(r"C:\Data\file.txt"), Path::new(r"C:\Data\file.txt")));
+        assert!(path_is_same_or_within(Path::new(r"c:\data\FILE.TXT"), Path::new(r"C:\Data\file.txt")));
+        assert!(path_is_same_or_within(Path::new(r"C:\Data\Folder\file.txt"), Path::new(r"C:\Data")));
+        assert!(path_is_same_or_within(Path::new(r"C:\Data\Folder\file.txt"), Path::new(r"C:\Data\")));
+        assert!(path_is_same_or_within(Path::new("C:/Data/file.txt"), Path::new(r"C:\Data")));
+        // A sibling that shares only a name prefix must not be excluded.
+        assert!(!path_is_same_or_within(Path::new(r"C:\Database\file.txt"), Path::new(r"C:\Data")));
+        assert!(!path_is_same_or_within(Path::new(r"D:\Data\file.txt"), Path::new(r"C:\Data")));
     }
 }

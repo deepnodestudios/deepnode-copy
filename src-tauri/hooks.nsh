@@ -14,7 +14,9 @@
 !macroend
 
 !macro NSIS_HOOK_PREINSTALL
-  ; Terminate any running DeepNode Copy instances
+  ; Give the running app time to flush history/Sentry and exit cleanly after launching us.
+  Sleep 2000
+  ; Terminate any remaining DeepNode Copy instances
   DetailPrint "Durduruluyor: Calisan DeepNode Copy surecleri..."
   nsExec::Exec 'taskkill /F /IM deepnode-gui.exe /IM DeepNodeCopy.exe /IM "DeepNode Copy.exe"'
 
@@ -38,6 +40,14 @@
     CopyFiles /SILENT "$INSTDIR\_up_\bin\deepnode_shell.dll" "$INSTDIR\deepnode_shell.dll"
     CopyFiles /SILENT "$INSTDIR\_up_\bin\deepnode_shell.dll" "$INSTDIR\bin\deepnode_shell.dll"
 
+  ; The sparse package manifest must resolve its COM DLL, executable and assets from one
+  ; external location, so mirror the resource bundle into the install root.
+  IfFileExists "$INSTDIR\_up_\bin\AppxManifest.xml" 0 +5
+    CopyFiles /SILENT "$INSTDIR\_up_\bin\AppxManifest.xml" "$INSTDIR\AppxManifest.xml"
+    CopyFiles /SILENT "$INSTDIR\_up_\bin\DeepNodePublic.cer" "$INSTDIR\DeepNodePublic.cer"
+    CreateDirectory "$INSTDIR\Assets"
+    CopyFiles /SILENT "$INSTDIR\_up_\bin\Assets\*.*" "$INSTDIR\Assets"
+
   ; Register the COM shell extension DLL cleanly
   DetailPrint "Windows Gezgini kabuk uzantisi kaydediliyor..."
   IfFileExists "$INSTDIR\deepnode_shell.dll" 0 +2
@@ -60,6 +70,30 @@
 
   IfFileExists "$INSTDIR\bin\deepnode_shell.dll" 0 +2
     ExecWait 'regsvr32.exe /u /s "$INSTDIR\bin\deepnode_shell.dll"'
+
+  ; Remove the per-user static verbs and Explorer handler entries written by the app.
+  DeleteRegKey HKCU "Software\Classes\*\shell\DeepNodeCopy"
+  DeleteRegKey HKCU "Software\Classes\*\shell\DeepNodeMove"
+  DeleteRegKey HKCU "Software\Classes\Directory\shell\DeepNodeCopy"
+  DeleteRegKey HKCU "Software\Classes\Directory\shell\DeepNodeMove"
+  DeleteRegKey HKCU "Software\Classes\Directory\Background\shell\DeepNodeCopy"
+  DeleteRegKey HKCU "Software\Classes\Drive\shell\DeepNodeCopy"
+  DeleteRegKey HKCU "Software\Classes\Drive\shell\DeepNodeMove"
+
+  DeleteRegKey HKCU "Software\Classes\*\shellex\DragDropHandlers\DeepNodeCopy"
+  DeleteRegKey HKCU "Software\Classes\Directory\shellex\DragDropHandlers\DeepNodeCopy"
+  DeleteRegKey HKCU "Software\Classes\Folder\shellex\DragDropHandlers\DeepNodeCopy"
+  DeleteRegKey HKCU "Software\Classes\Drive\shellex\DragDropHandlers\DeepNodeCopy"
+  DeleteRegKey HKCU "Software\Classes\lnkfile\shellex\DragDropHandlers\DeepNodeCopy"
+  DeleteRegKey HKCU "Software\Classes\Directory\shellex\CopyHookHandlers\DeepNodeCopy"
+  DeleteRegKey HKCU "Software\Classes\Folder\shellex\CopyHookHandlers\DeepNodeCopy"
+  DeleteRegKey HKCU "Software\Classes\Directory\shellex\DropHandler\DeepNodeCopy"
+  DeleteRegKey HKCU "Software\Classes\Folder\shellex\DropHandler\DeepNodeCopy"
+  DeleteRegKey HKCU "Software\Classes\Directory\Background\shellex\DropHandler\DeepNodeCopy"
+  DeleteRegKey HKCU "Software\Classes\Drive\shellex\DropHandler\DeepNodeCopy"
+
+  ; Remove the Windows 11 sparse context-menu package for the current user.
+  nsExec::Exec 'powershell -NoProfile -Command "Get-AppxPackage -Name DeepNodeCopy | Remove-AppxPackage -ErrorAction SilentlyContinue"'
 
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "DeepNode Copy"
 

@@ -7,6 +7,7 @@ pub mod vss;
 pub mod engine;
 pub mod queue;
 pub mod util;
+pub mod shell_suppress;
 
 pub use error::{Result, TransferError};
 pub use util::{

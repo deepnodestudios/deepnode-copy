@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Folder, Zap, RefreshCw, X, ArrowDown, Settings } from "lucide-react";
+import { Folder, Zap, X, ArrowDown, Settings } from "lucide-react";
 import { translations, Language } from "../i18n";
 import packageJson from "../../package.json";
 
@@ -17,8 +17,8 @@ interface CopyPasteModalProps {
   destination: string;
   onClose: () => void;
   onSelectExplorer: () => void;
-  onSelectDeepNodeCopy: (policy?: string) => void;
-  onSelectDeepNodeMove: () => void;
+  onSelectDeepNodeCopy: () => void;
+  mode?: "copy" | "move";
   lang?: Language;
   rememberChoice?: boolean;
   lastChoice?: string | null;
@@ -26,7 +26,7 @@ interface CopyPasteModalProps {
   onChangeRememberChoice?: (enabled: boolean) => void;
 }
 
-const OPTION_IDS = ["explorer", "deepnode-copy", "deepnode-replace-older", "deepnode-move"];
+const OPTION_IDS = ["explorer", "deepnode-copy"];
 
 export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
   isOpen,
@@ -35,7 +35,7 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
   onClose,
   onSelectExplorer,
   onSelectDeepNodeCopy,
-  onSelectDeepNodeMove,
+  mode = "copy",
   lang = "tr",
   rememberChoice = false,
   lastChoice = null,
@@ -74,27 +74,15 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
     },
     {
       id: "deepnode-copy",
-      title: `${t.appTitle} - ${t.copy}`,
-      subtitle: `${t.copy} (${t.directIo} & xxHash3)`,
-      icon: <Zap className="w-6 h-6 text-indigo-400 flex-shrink-0" />,
-      action: () => onSelectDeepNodeCopy("auto_rename"),
+      title: t.appTitle,
+      subtitle: `${mode === "move" ? t.move : t.copy} (${t.directIo} & xxHash3)`,
+      icon: (
+        <Zap
+          className={`w-6 h-6 flex-shrink-0 ${mode === "move" ? "text-emerald-400" : "text-indigo-400"}`}
+        />
+      ),
+      action: onSelectDeepNodeCopy,
       shortcutKey: "2",
-    },
-    {
-      id: "deepnode-replace-older",
-      title: `${t.appTitle} - ${t.conflictOlder}`,
-      subtitle: `${t.conflictOlder} (/OverwriteOlder)`,
-      icon: <RefreshCw className="w-6 h-6 text-sky-400 flex-shrink-0" />,
-      action: () => onSelectDeepNodeCopy("older"),
-      shortcutKey: "3",
-    },
-    {
-      id: "deepnode-move",
-      title: `${t.appTitle} - ${t.move}`,
-      subtitle: `${t.move} (${t.destination})`,
-      icon: <Zap className="w-6 h-6 text-emerald-400 flex-shrink-0" />,
-      action: onSelectDeepNodeMove,
-      shortcutKey: "4",
     },
   ];
 
@@ -141,12 +129,6 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
       } else if (key === "2" || key === "c" || key === "k") {
         e.preventDefault();
         handleSelectOption(options[1]);
-      } else if (key === "3") {
-        e.preventDefault();
-        handleSelectOption(options[2]);
-      } else if (key === "4" || key === "m" || key === "t") {
-        e.preventDefault();
-        handleSelectOption(options[3]);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -324,7 +306,7 @@ export const CopyPasteModal: React.FC<CopyPasteModalProps> = ({
         className="px-3 py-1.5 bg-neutral-950/70 border-t border-neutral-800/80 flex items-center justify-between text-[10px] text-neutral-500 font-mono cursor-move"
         data-tauri-drag-region
       >
-        <span>1-4 / Enter | Esc: {t.cancel}</span>
+        <span>1-2 / Enter | Esc: {t.cancel}</span>
         <span className="text-indigo-400">DeepNode v{packageJson.version}</span>
       </div>
     </div>

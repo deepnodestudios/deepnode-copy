@@ -822,7 +822,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
 
     const standalone = files.filter((f) => !assignedFileIds.has(f.id));
     return { folderGroups: groups, standaloneFiles: standalone };
-  }, [files, stagedSources]);
+  }, [files, stagedSources, stats.current_file_transferred]);
 
   const visibleFileIds = React.useMemo(() => {
     const ids: number[] = [];
@@ -883,7 +883,16 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
     : lang === "tr" ? "Hazır (Beklemede)" : "Ready (Idle)";
 
   const queueCount = files.length > 0 ? files.length : stagedSources.length;
-  const verifiedCount = files.filter((f) => f.status === "completed").length;
+  const completedCount = files.filter((f) => f.status === "completed").length;
+  const hashLabel =
+    {
+      xxhash3: "xxHash3-64",
+      xxhash128: "xxHash3-128",
+      blake3: "BLAKE3",
+      sha256: "SHA-256",
+      md5: "MD5",
+    }[hashAlgorithm] || hashAlgorithm;
+  const peakSpeed = speedHistory.length > 0 ? Math.max(...speedHistory) : 0;
 
   return (
     <div className="w-full h-full flex flex-col bg-[#070a12] border border-[#1e293b]/70 rounded-2xl text-slate-100 select-none overflow-hidden font-sans">
@@ -914,7 +923,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
           </span>
           <span data-tauri-drag-region="deep" className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-950/60 text-emerald-400 border border-emerald-500/40 font-bold font-mono">
             <span data-tauri-drag-region="deep" className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            <span data-tauri-drag-region="deep">SIMD xxHash3</span>
+            <span data-tauri-drag-region="deep">{hashLabel}</span>
           </span>
           {directIo && (
             <span data-tauri-drag-region="deep" className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-blue-950/60 text-blue-400 border border-blue-500/40 font-bold font-mono">
@@ -1081,7 +1090,9 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                   </div>
                   <div data-tauri-drag-region="deep" className="text-xs text-emerald-400 font-medium flex items-center gap-1.5 justify-end mt-0.5">
                     <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>{verifiedCount} files verified</span>
+                    <span>
+                      {completedCount} {lang === "tr" ? "dosya tamamlandı" : "files completed"}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -1243,11 +1254,25 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
 
                   <button
                     onClick={() => {
+                      if (isTransferring) return;
                       setSelectedIds(new Set());
                       onResetToIdle();
                     }}
-                    className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[#141b2d] hover:bg-[#1e293b] border border-slate-800 text-slate-400 hover:text-slate-200 text-xs transition cursor-pointer"
-                    title={lang === "tr" ? "Kuyruğu Temizle" : "Clear Queue"}
+                    disabled={isTransferring}
+                    className={`flex items-center gap-1 px-2 py-1 rounded-lg border text-xs transition ${
+                      isTransferring
+                        ? "bg-[#141b2d]/50 border-slate-800 text-slate-600 cursor-not-allowed"
+                        : "bg-[#141b2d] hover:bg-[#1e293b] border-slate-800 text-slate-400 hover:text-slate-200 cursor-pointer"
+                    }`}
+                    title={
+                      isTransferring
+                        ? lang === "tr"
+                          ? "Aktarım sürerken kuyruk temizlenemez"
+                          : "Queue cannot be cleared during an active transfer"
+                        : lang === "tr"
+                        ? "Kuyruğu Temizle"
+                        : "Clear Queue"
+                    }
                   >
                     <Eraser className="w-3 h-3" />
                     <span>{lang === "tr" ? "Temizle" : "Clear"}</span>
@@ -1541,7 +1566,9 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                 </div>
                 <div className="text-right font-mono">
                   <div className="text-2xl font-black text-cyan-400">{speedDisplay}</div>
-                  <div className="text-xs text-slate-400">Peak: 2.14 GB/s</div>
+                  <div className="text-xs text-slate-400">
+                    Peak: {peakSpeed > 0 ? `${formatBytes(peakSpeed)}/s` : "—"}
+                  </div>
                 </div>
               </div>
 
@@ -1569,7 +1596,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                 <div className="p-4 rounded-xl bg-[#0a0e1a] border border-[#172136]">
                   <span className="text-[11px] font-mono text-slate-400">HASH ENGINE</span>
                   <div className="text-lg font-bold text-emerald-400 font-mono mt-1">
-                    SIMD xxHash3 (30 GB/s)
+                    {hashLabel}
                   </div>
                 </div>
 
@@ -1631,9 +1658,25 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                 </div>
 
                 <div className="pt-2">
-                  <span className="text-xs text-emerald-400 font-semibold flex items-center gap-1.5">
+                  <span
+                    className={`text-xs font-semibold flex items-center gap-1.5 ${
+                      verifyMode === "never" ? "text-amber-400" : "text-emerald-400"
+                    }`}
+                  >
                     <CheckCircle2 className="w-4 h-4" />
-                    <span>{lang === "tr" ? "SIMD motoru aktif: Aktarılan tüm baytlar otomatik olarak doğrulanıyor." : "SIMD engine active: all transferred bytes are automatically verified."}</span>
+                    <span>
+                      {verifyMode === "always"
+                        ? lang === "tr"
+                          ? "Her dosya kopyalandıktan sonra hash ile doğrulanır."
+                          : "Every copied file is verified by hash."
+                        : verifyMode === "ondifference"
+                        ? lang === "tr"
+                          ? "Doğrulama yalnızca kaynak/hedef farklı göründüğünde çalışır."
+                          : "Verification runs only when the source and target appear different."
+                        : lang === "tr"
+                        ? "Hash doğrulaması kapalı; yalnızca kopyalama bütünlüğü denetlenir."
+                        : "Hash verification is off; only copy integrity is checked."}
+                    </span>
                   </span>
                 </div>
               </div>
@@ -1719,9 +1762,9 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                     className="bg-[#121827] border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none cursor-pointer"
                   >
                     <option value="do_nothing">{lang === "tr" ? "Hiçbir Şey Yapma" : "Do Nothing"}</option>
-                    <option value="close">{lang === "tr" ? "Uygulamayı Kapat" : "Close App"}</option>
-                    <option value="eject">{lang === "tr" ? "Sürücüyü Güvenle Çıkar" : "Eject Drive"}</option>
+                    <option value="close_app">{lang === "tr" ? "Uygulamayı Kapat" : "Close App"}</option>
                     <option value="sleep">{lang === "tr" ? "Bilgisayarı Uyut" : "Sleep PC"}</option>
+                    <option value="hibernate">{lang === "tr" ? "Bilgisayarı Hazırda Beklet" : "Hibernate PC"}</option>
                     <option value="shutdown">{lang === "tr" ? "Bilgisayarı Kapat" : "Shutdown PC"}</option>
                   </select>
                 </div>
@@ -2070,10 +2113,16 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
 
               <button
                 onClick={() => {
+                  if (isTransferring) return;
                   onClearStaged();
                   setContextMenu(null);
                 }}
-                className="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-rose-500/15 text-rose-300 hover:text-rose-200 transition cursor-pointer text-left font-medium"
+                disabled={isTransferring}
+                className={`flex items-center gap-2.5 px-3 py-2 rounded-lg transition text-left font-medium ${
+                  isTransferring
+                    ? "text-slate-600 cursor-not-allowed"
+                    : "hover:bg-rose-500/15 text-rose-300 hover:text-rose-200 cursor-pointer"
+                }`}
               >
                 <Trash2 className="w-3.5 h-3.5 flex-shrink-0" />
                 <span>{lang === "tr" ? "Kuyruğu Temizle" : "Clear Queue"}</span>
@@ -2198,10 +2247,24 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                   </span>
                   <span className="text-emerald-400 font-bold flex items-center gap-1">
                     <ShieldCheck className="w-3 h-3 flex-shrink-0" />
-                    <span>xxHash3</span>
+                    <span>{verifyMode === "never" ? "-" : hashLabel}</span>
                   </span>
                   <span className="text-[10px] text-slate-500 font-mono">
-                    {propertiesModalItem.status === "completed" ? "Verified" : "Pending"}
+                    {propertiesModalItem.status === "completed"
+                      ? verifyMode === "never"
+                        ? lang === "tr"
+                          ? "Doğrulama kapalı"
+                          : "Verification off"
+                        : propertiesModalItem.dst_hash
+                        ? lang === "tr"
+                          ? "Doğrulandı"
+                          : "Verified"
+                        : lang === "tr"
+                        ? "Tamamlandı"
+                        : "Completed"
+                      : lang === "tr"
+                      ? "Bekliyor"
+                      : "Pending"}
                   </span>
                 </div>
               </div>

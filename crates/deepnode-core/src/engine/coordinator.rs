@@ -19,10 +19,38 @@ use crate::metadata::acl::SecurityAcl;
 use crate::metadata::ads::AdsManager;
 use crate::metadata::attributes::FileAttributes;
 use crate::metadata::timestamps::FileTimestamps;
-use crate::vss::shadow_copy::VssManager;
+use crate::vss::shadow_copy::{ResolvedShadow, VssManager};
 use crate::io::win32_file::Win32FileHandle;
 use windows::core::PCWSTR;
 use windows::Win32::Storage::FileSystem::{DeleteFileW, SetFileAttributesW, FILE_ATTRIBUTE_NORMAL};
+
+fn available_space_for_path(path: &Path) -> Option<u64> {
+    use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let mut probe = path.to_path_buf();
+    let existing = loop {
+        if probe.exists() {
+            break probe;
+        }
+        match probe.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => probe = parent.to_path_buf(),
+            _ => return None,
+        }
+    };
+
+    let wide = Win32FileHandle::to_wide_path(&existing);
+    let mut free_to_caller: u64 = 0;
+    unsafe {
+        GetDiskFreeSpaceExW(
+            PCWSTR(wide.as_ptr()),
+            Some(&mut free_to_caller as *mut u64),
+            None,
+            None,
+        )
+        .ok()?;
+    }
+    Some(free_to_caller)
+}
 
 fn delete_source_after_move(src_path: &Path) -> std::io::Result<()> {
     if !src_path.exists() {
@@ -101,24 +129,16 @@ impl TransferCoordinator {
     }
 
     pub fn cleanup_cancelled_item(&self, dst_path: &Path) -> bool {
-        crate::io::copier::cleanup_cancelled_file_and_empty_parents(
+        crate::io::copier::cleanup_cancelled_empty_parents(
             dst_path,
             self.destination_dir.as_deref(),
         )
-    }
-
-    /// Reliably removes a partially transferred file on cancellation and cleans up any resulting empty directories.
-    pub fn remove_partial_file(path: &Path) -> bool {
-        crate::io::copier::cleanup_cancelled_file_and_empty_parents(path, None)
     }
 
     fn mark_remaining_canceled(&mut self, from_idx: usize) {
         for i in from_idx..self.items.len() {
             if self.items[i].status == FileItemStatus::Copying {
                 self.items[i].status = FileItemStatus::Canceled;
-                if self.items[i].bytes_transferred > 0 {
-                    self.cleanup_cancelled_item(&self.items[i].dst_path);
-                }
             } else if self.items[i].status == FileItemStatus::Pending {
                 self.items[i].status = FileItemStatus::Canceled;
                 // Never delete Pending files - they were never written to by this transfer!
@@ -148,6 +168,23 @@ impl TransferCoordinator {
             }
         }
 
+        if let Some(dest) = self.destination_dir.as_deref() {
+            if let Some(available) = available_space_for_path(dest) {
+                if total_bytes > available {
+                    error!(
+                        "Not enough free space on destination {:?}: required {}, available {}",
+                        dest, total_bytes, available
+                    );
+                    let err = TransferError::DiskFull {
+                        required: total_bytes,
+                        available,
+                    };
+                    let _ = self.event_tx.send(EngineEvent::TransferFailed(err.to_string()));
+                    return Err(err);
+                }
+            }
+        }
+
         info!("TransferCoordinator::run starting: {} files, {} bytes", total_files, total_bytes);
 
         let _ = self.event_tx.send(EngineEvent::TransferStarted {
@@ -170,6 +207,7 @@ impl TransferCoordinator {
         for idx in 0..self.items.len() {
             if self.cancel_flag.load(Ordering::SeqCst) {
                 info!("TransferCoordinator canceled before processing file idx {}", idx);
+                self.cleanup_cancelled_item(&self.items[idx].dst_path);
                 self.mark_remaining_canceled(idx);
                 let _ = self.event_tx.send(EngineEvent::TransferCanceled);
                 return Err(TransferError::Canceled);
@@ -179,6 +217,7 @@ impl TransferCoordinator {
             while self.pause_flag.load(Ordering::Relaxed) {
                 if self.cancel_flag.load(Ordering::SeqCst) {
                     info!("TransferCoordinator canceled while paused before processing file idx {}", idx);
+                    self.cleanup_cancelled_item(&self.items[idx].dst_path);
                     self.mark_remaining_canceled(idx);
                     let _ = self.event_tx.send(EngineEvent::TransferCanceled);
                     return Err(TransferError::Canceled);
@@ -200,7 +239,7 @@ impl TransferCoordinator {
                 let mut item = self.items[idx].clone();
                 item.status = FileItemStatus::Skipped;
                 self.items[idx] = item.clone();
-                stats.skipped_files += 1;
+                account_pre_copy_skip(&mut stats, item.size);
                 let _ = self.event_tx.send(EngineEvent::FileSkipped {
                     item: item.clone(),
                     reason: "Skipped by user".to_string(),
@@ -220,23 +259,6 @@ impl TransferCoordinator {
             stats.current_file_size = item.size;
             stats.current_file_transferred = 0;
 
-            // Probe target prior to transfer to identify if this is a differing/modified file
-            let dst_meta_before = std::fs::metadata(&item.dst_path).ok();
-            let had_difference = match dst_meta_before {
-                Some(ref dm) => {
-                    let size_diff = dm.len() != item.size;
-                    let time_diff = match (
-                        std::fs::metadata(&item.src_path).ok().and_then(|m| m.modified().ok()),
-                        dm.modified().ok(),
-                    ) {
-                        (Some(st), Some(dt)) => st != dt,
-                        _ => true,
-                    };
-                    size_diff || time_diff
-                }
-                None => true,
-            };
-
             // Conflict resolution
             let resolution = ConflictResolver::resolve(
                 &item.src_path,
@@ -247,7 +269,7 @@ impl TransferCoordinator {
             match resolution {
                 ConflictResolutionAction::SkipFile => {
                     item.status = FileItemStatus::Skipped;
-                    stats.skipped_files += 1;
+                    account_pre_copy_skip(&mut stats, item.size);
                     let _ = self.event_tx.send(EngineEvent::FileSkipped {
                         item: item.clone(),
                         reason: "Skipped by conflict resolution policy".to_string(),
@@ -320,6 +342,7 @@ impl TransferCoordinator {
                         };
 
                         if self.cancel_flag.load(Ordering::SeqCst) || choice_res.is_none() {
+                            self.cleanup_cancelled_item(&item.dst_path);
                             item.status = FileItemStatus::Canceled;
                             self.items[idx] = item;
                             self.mark_remaining_canceled(idx + 1);
@@ -344,7 +367,7 @@ impl TransferCoordinator {
                             }
                             "skip" => {
                                 item.status = FileItemStatus::Skipped;
-                                stats.skipped_files += 1;
+                                account_pre_copy_skip(&mut stats, item.size);
                                 let _ = self.event_tx.send(EngineEvent::FileSkipped {
                                     item: item.clone(),
                                     reason: "User skipped conflicting file".to_string(),
@@ -380,6 +403,22 @@ impl TransferCoordinator {
                 ConflictResolutionAction::ProceedOverwrite => {}
             }
 
+            // Probe the final path: conflict resolution may have renamed the destination.
+            let had_difference = match std::fs::metadata(&item.dst_path).ok() {
+                Some(ref dm) => {
+                    let size_diff = dm.len() != item.size;
+                    let time_diff = match (
+                        std::fs::metadata(&item.src_path).ok().and_then(|m| m.modified().ok()),
+                        dm.modified().ok(),
+                    ) {
+                        (Some(st), Some(dt)) => st != dt,
+                        _ => true,
+                    };
+                    size_diff || time_diff
+                }
+                None => true,
+            };
+
             item.status = FileItemStatus::Copying;
             self.items[idx].status = FileItemStatus::Copying;
 
@@ -398,6 +437,8 @@ impl TransferCoordinator {
 
             match copy_result {
                 Err(TransferError::Canceled) => {
+                    // The copier already removed its temporary file; the original destination
+                    // (if any) was never touched, so only empty directories are reclaimed.
                     self.cleanup_cancelled_item(&item.dst_path);
                     item.status = FileItemStatus::Canceled;
                     self.items[idx] = item;
@@ -406,7 +447,7 @@ impl TransferCoordinator {
                     return Err(TransferError::Canceled);
                 }
                 Err(TransferError::SkippedByUser) => {
-                    self.cleanup_cancelled_item(&item.dst_path);
+                    // Same as cancellation: only the copier's temporary file is removed.
                     item.status = FileItemStatus::Skipped;
                     self.items[idx] = item.clone();
                     stats.skipped_files += 1;
@@ -417,7 +458,11 @@ impl TransferCoordinator {
                     let _ = self.event_tx.send(EngineEvent::ProgressUpdated(stats.clone()));
                     continue;
                 }
-                Ok((bytes_transferred, effective_src_path)) => {
+                Ok((bytes_transferred, effective_src_path, shadow_lease)) => {
+                    // Keep any temporary VSS snapshot alive until metadata has been
+                    // read from the shadow path below; it is deleted on drop.
+                    let _shadow_lease = shadow_lease;
+
                     // Post-copy verification
                     let should_verify = match self.config.verify_mode {
                         VerifyMode::Always => item.size > 0,
@@ -427,7 +472,8 @@ impl TransferCoordinator {
 
                     if should_verify {
                         if self.cancel_flag.load(Ordering::SeqCst) {
-                            self.cleanup_cancelled_item(&item.dst_path);
+                            // The file was already fully copied and atomically finalized.
+                            // Keep it; deleting a completed file on cancel would lose data.
                             item.status = FileItemStatus::Canceled;
                             self.items[idx] = item;
                             self.mark_remaining_canceled(idx + 1);
@@ -488,7 +534,7 @@ impl TransferCoordinator {
                     // Check if skip was requested during copy or verification
                     if self.skip_flag.load(Ordering::SeqCst) {
                         self.skip_flag.store(false, Ordering::SeqCst);
-                        self.cleanup_cancelled_item(&item.dst_path);
+                        // The destination is a fully finalized copy; keep it instead of deleting data.
                         item.status = FileItemStatus::Skipped;
                         stats.skipped_files += 1;
                         let _ = self.event_tx.send(EngineEvent::FileSkipped {
@@ -501,7 +547,7 @@ impl TransferCoordinator {
 
                     // Check cancellation immediately after copy/verify
                     if self.cancel_flag.load(Ordering::SeqCst) {
-                        self.cleanup_cancelled_item(&item.dst_path);
+                        // Keep the already-finalized destination file.
                         item.status = FileItemStatus::Canceled;
                         self.items[idx] = item;
                         self.mark_remaining_canceled(idx + 1);
@@ -579,17 +625,46 @@ impl TransferCoordinator {
 
                     // If Move mode, verify destination integrity and delete source file
                     if self.config.mode == TransferMode::Move {
+                        // Never remove the source when metadata could not be preserved: doing so
+                        // would permanently lose ACLs, streams, timestamps or attributes.
+                        if !meta_errors.is_empty() {
+                            error!("Move aborted source deletion because metadata copy failed for {:?}", item.dst_path);
+                            item.status = FileItemStatus::Failed;
+                            item.error_message = Some(format!(
+                                "Kopyalandı ancak meta veriler korunamadığı için kaynak silinmedi: {}",
+                                meta_errors.join("; ")
+                            ));
+                            stats.failed_files += 1;
+                            let _ = self.event_tx.send(EngineEvent::FileFailed {
+                                item: item.clone(),
+                                error: item.error_message.clone().unwrap(),
+                            });
+                            self.items[idx] = item;
+                            continue;
+                        }
+
                         let dst_exists = item.dst_path.exists();
                         let dst_size = std::fs::metadata(&item.dst_path).map(|m| m.len()).unwrap_or(0);
-                        if dst_exists && (item.size == 0 || dst_size == item.size) {
-                            if let Err(e) = delete_source_after_move(&item.src_path) {
-                                warn!("Failed to delete source file after move: {:?}: {}", item.src_path, e);
-                                item.error_message = Some(format!("Copied to destination but failed to delete source: {}", e));
-                            }
-                        } else {
+                        if !dst_exists || (item.size != 0 && dst_size != item.size) {
                             error!("Move failed: destination file missing or truncated ({:?})", item.dst_path);
                             item.status = FileItemStatus::Failed;
                             item.error_message = Some("Destination file missing or size mismatch after move".to_string());
+                            stats.failed_files += 1;
+                            let _ = self.event_tx.send(EngineEvent::FileFailed {
+                                item: item.clone(),
+                                error: item.error_message.clone().unwrap(),
+                            });
+                            self.items[idx] = item;
+                            continue;
+                        }
+
+                        if let Err(e) = delete_source_after_move(&item.src_path) {
+                            warn!("Failed to delete source file after move: {:?}: {}", item.src_path, e);
+                            item.status = FileItemStatus::Failed;
+                            item.error_message = Some(format!(
+                                "Copied to destination but failed to delete source: {}",
+                                e
+                            ));
                             stats.failed_files += 1;
                             let _ = self.event_tx.send(EngineEvent::FileFailed {
                                 item: item.clone(),
@@ -619,9 +694,9 @@ impl TransferCoordinator {
 
             self.items[idx] = item;
 
-            // Update overall progress percentage
-            if total_bytes > 0 {
-                stats.overall_percentage = (stats.transferred_bytes as f32 / total_bytes as f32) * 100.0;
+            // Update overall progress percentage (total_bytes shrinks when queued files are removed)
+            if stats.total_bytes > 0 {
+                stats.overall_percentage = (stats.transferred_bytes as f32 / stats.total_bytes as f32) * 100.0;
             }
             let _ = self.event_tx.send(EngineEvent::ProgressUpdated(stats.clone()));
         }
@@ -667,13 +742,14 @@ impl TransferCoordinator {
         copier: &FileCopier,
         stats: &mut TransferStats,
         speed_calc: &mut SpeedCalculator,
-    ) -> Result<(u64, std::path::PathBuf)> {
+    ) -> Result<(u64, std::path::PathBuf, Option<ResolvedShadow>)> {
         let max_retries = self.config.retry_count;
         let timeout_duration = Duration::from_secs(self.config.retry_timeout_secs);
         let start_time = Instant::now();
 
         let mut attempt = 0;
         let mut actual_src_path = item.src_path.clone();
+        let mut shadow_lease: Option<ResolvedShadow> = None;
 
         loop {
             attempt += 1;
@@ -779,21 +855,24 @@ impl TransferCoordinator {
                         transferred: bytes,
                         total: file_size,
                     });
-                    return Ok((bytes, actual_src_path));
+                    return Ok((bytes, actual_src_path, shadow_lease));
                 }
                 Err(TransferError::Canceled) => {
-                    self.cleanup_cancelled_item(&item.dst_path);
+                    // The copier removed its partial temporary file; never touch the destination.
                     return Err(TransferError::Canceled);
                 }
                 Err(TransferError::SkippedByUser) => {
-                    self.cleanup_cancelled_item(&item.dst_path);
                     return Err(TransferError::SkippedByUser);
                 }
                 Err(TransferError::FileLocked) if self.config.use_vss_for_locked && actual_src_path == item.src_path => {
                     warn!("File is locked: {:?}. Attempting VSS shadow copy...", item.src_path);
-                    if let Ok(shadow_path) = VssManager::resolve_shadow_path(&item.src_path) {
-                        actual_src_path = shadow_path;
-                        continue;
+                    match VssManager::resolve_shadow_path(&item.src_path) {
+                        Ok(shadow) => {
+                            actual_src_path = shadow.path().to_path_buf();
+                            shadow_lease = Some(shadow);
+                            continue;
+                        }
+                        Err(e) => warn!("VSS shadow copy unavailable: {}", e),
                     }
                     if attempt >= max_retries || start_time.elapsed() >= timeout_duration {
                         return Err(TransferError::FileLocked);
@@ -819,6 +898,15 @@ impl TransferCoordinator {
             .collect()
     }
 
+    /// Failed and user-skipped items can both be retried by the Retry action.
+    pub fn get_retryable_items(&self) -> Vec<FileItem> {
+        self.items
+            .iter()
+            .filter(|i| i.status == FileItemStatus::Failed || i.status == FileItemStatus::Skipped)
+            .cloned()
+            .collect()
+    }
+
     /// Returns list of skipped items.
     pub fn get_skipped_items(&self) -> Vec<FileItem> {
         self.items
@@ -827,4 +915,16 @@ impl TransferCoordinator {
             .cloned()
             .collect()
     }
+}
+
+/// A file skipped before any bytes were copied no longer counts toward progress totals.
+fn account_pre_copy_skip(stats: &mut TransferStats, size: u64) {
+    stats.skipped_files += 1;
+    stats.total_files = stats.total_files.saturating_sub(1);
+    stats.total_bytes = stats.total_bytes.saturating_sub(size);
+    stats.overall_percentage = if stats.total_bytes == 0 {
+        100.0
+    } else {
+        ((stats.transferred_bytes as f32 / stats.total_bytes as f32) * 100.0).min(100.0)
+    };
 }

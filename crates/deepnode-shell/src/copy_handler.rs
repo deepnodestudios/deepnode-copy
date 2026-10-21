@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use windows::core::{Interface, GUID, PCWSTR};
 use windows::Win32::Foundation::{BOOL, CLASS_E_NOAGGREGATION, HWND};
 use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
@@ -28,6 +29,32 @@ impl Drop for DeepNodeCopyHook {
     fn drop(&mut self) {
         crate::dll_release();
     }
+}
+
+/// CopyHook sometimes receives the final folder path (destination\foldername) for
+/// folder operations. If that path does not exist yet and its leaf matches the source
+/// leaf, the actual destination directory is its parent. Using the raw value would
+/// create a duplicated nesting level.
+fn resolve_copyhook_destination(sources: &[String], dest: &Path) -> PathBuf {
+    if dest.is_dir() {
+        return dest.to_path_buf();
+    }
+
+    let trimmed = dest.to_string_lossy();
+    let candidate = PathBuf::from(trimmed.trim_end_matches(['\\', '/']));
+    if sources.len() == 1 {
+        let src = Path::new(&sources[0]);
+        if let (Some(src_name), Some(dest_name)) = (src.file_name(), candidate.file_name()) {
+            if src_name.eq_ignore_ascii_case(dest_name) {
+                if let Some(parent) = candidate.parent() {
+                    if parent.is_dir() {
+                        return parent.to_path_buf();
+                    }
+                }
+            }
+        }
+    }
+    candidate
 }
 
 impl ICopyHookW_Impl for DeepNodeCopyHook_Impl {
@@ -74,22 +101,59 @@ impl ICopyHookW_Impl for DeepNodeCopyHook_Impl {
             return IDYES;
         }
 
+        // The user explicitly chose "Explorer" in our popup; do not intercept again.
+        if deepnode_core::shell_suppress::copy_hooks_suppressed() {
+            crate::util::log_shell("CopyCallback: suppression event active, leaving operation to Explorer");
+            return IDYES;
+        }
+
+        // CopyHook may pass multiple sources as a semicolon-separated list.
+        let sources: Vec<String> = src_str
+            .split(';')
+            .map(|s| s.trim().trim_matches('"').to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if sources.is_empty() {
+            return IDYES;
+        }
+
+        let resolved_dest = resolve_copyhook_destination(&sources, Path::new(dest_str.trim_matches('"')));
+        let mode = if wfunc == 1 { "move" } else { "copy" };
+
+        // A move inside one volume is an instant rename; Explorer does it better than
+        // copy+delete and must keep ownership of it.
+        if wfunc == 1
+            && sources
+                .iter()
+                .all(|src| crate::drag_drop::same_volume(Path::new(src), &resolved_dest))
+        {
+            crate::util::log_shell(&format!(
+                "CopyCallback: same-volume folder move, leaving to Explorer (src={}, dest={:?})",
+                src_str, resolved_dest
+            ));
+            return IDYES;
+        }
+
         let exe = get_exe_path();
         let mut cmd = std::process::Command::new(&exe);
         if let Some(parent) = exe.parent() {
             cmd.current_dir(parent);
         }
 
-        let mode = if wfunc == 1 { "move" } else { "copy" };
-        crate::util::log_shell(&format!("ICopyHookW::CopyCallback: wfunc={} ({}), src={}, dest={}", wfunc, mode, src_str, dest_str));
+        crate::util::log_shell(&format!(
+            "ICopyHookW::CopyCallback: wfunc={} ({}), src={}, dest={}, resolved_dest={:?}",
+            wfunc, mode, src_str, dest_str, resolved_dest
+        ));
 
         cmd.arg("--popup")
             .arg("--mode")
             .arg(mode)
-            .arg("--source")
-            .arg(&src_str)
-            .arg("--target")
-            .arg(&dest_str);
+            .arg("--source");
+        for source in &sources {
+            cmd.arg(source);
+        }
+        cmd.arg("--target")
+            .arg(&resolved_dest);
 
         if cmd.spawn().is_ok() {
             crate::util::log_shell("ICopyHookW::CopyCallback spawned popup successfully, returning IDCANCEL to abort native copy");

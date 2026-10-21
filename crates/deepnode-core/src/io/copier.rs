@@ -1,5 +1,5 @@
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use crate::error::{Result, TransferError};
 use crate::hash::hasher::MultiHasher;
@@ -13,6 +13,11 @@ pub struct CopyProgress {
 }
 
 pub type ProgressCallback = Box<dyn Fn(u64) + Send + Sync>;
+
+const SECTOR_SIZE: usize = 4096;
+const DIRECT_IO_MIN_SIZE: u64 = 64 * 1024;
+
+static PARTIAL_FILE_SEQ: AtomicU64 = AtomicU64::new(1);
 
 pub struct FileCopier {
     buffer_pool: AlignedBufferPool,
@@ -47,6 +52,10 @@ impl FileCopier {
     }
 
     /// High performance copy of a single file with on-the-fly hash calculation, pause/cancel support, and individual file skipping.
+    ///
+    /// Data is written to a temporary sibling file and only moved over the destination after
+    /// the bytes are flushed and the full length is verified. Cancellation or an I/O error
+    /// therefore never truncates or deletes an existing destination file.
     #[allow(clippy::too_many_arguments, clippy::permissions_set_readonly_false)]
     pub fn copy_file_with_skip<F>(
         &self,
@@ -61,7 +70,7 @@ impl FileCopier {
     where
         F: Fn(u64) + Send + Sync + 'static,
     {
-        // 1. Initial cancel / skip check before touching any file or metadata
+        // Cancel & skip check before touching any file or metadata
         if cancel_flag.load(Ordering::SeqCst) {
             return Err(TransferError::Canceled);
         }
@@ -72,18 +81,7 @@ impl FileCopier {
             }
         }
 
-        // 1. Initial cancel & skip check BEFORE touching or truncating destination!
-        if cancel_flag.load(Ordering::SeqCst) {
-            return Err(TransferError::Canceled);
-        }
-        if let Some(ref skip) = skip_flag {
-            if skip.load(Ordering::SeqCst) {
-                skip.store(false, Ordering::SeqCst);
-                return Err(TransferError::SkippedByUser);
-            }
-        }
-
-        // 2. Pre-open pause check: wait here BEFORE touching or truncating destination!
+        // Pre-open pause check: wait here BEFORE touching or truncating anything
         while pause_flag.load(Ordering::Relaxed) {
             if cancel_flag.load(Ordering::SeqCst) {
                 return Err(TransferError::Canceled);
@@ -97,13 +95,11 @@ impl FileCopier {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
-        let dst_existed_before = dst_path.exists();
         let topology = DiskDetector::analyze(src_path, dst_path);
 
         // Pre-query source size to decide on Direct I/O qualification
         let probe_size = std::fs::metadata(src_path).map(|m| m.len()).unwrap_or(0);
-        const SECTOR_SIZE: usize = 4096;
-        let use_direct_io = self.direct_io && probe_size >= 64 * 1024;
+        let use_direct_io = self.direct_io && probe_size >= DIRECT_IO_MIN_SIZE;
 
         let (src_file, src_is_direct) = if use_direct_io {
             match Win32FileHandle::open_read(src_path, true, false) {
@@ -120,8 +116,8 @@ impl FileCopier {
             let _ = std::fs::create_dir_all(parent);
         }
 
-        // If destination exists, clear any read-only attribute so CREATE_ALWAYS succeeds
-        if dst_existed_before {
+        // If destination exists, clear any read-only attribute so the final atomic replace succeeds
+        if dst_path.exists() {
             if let Ok(metadata) = std::fs::metadata(dst_path) {
                 let mut perms = metadata.permissions();
                 if perms.readonly() {
@@ -131,18 +127,20 @@ impl FileCopier {
             }
         }
 
+        let temp_path = partial_path(dst_path);
+
         let (dst_file, dst_is_direct) = if src_is_direct {
-            match Win32FileHandle::open_write(dst_path, true, true, false) {
+            match Win32FileHandle::open_write(&temp_path, true, true, false) {
                 Ok(h) => (h, true),
-                Err(_) => (Win32FileHandle::open_write(dst_path, true, false, false)?, false),
+                Err(_) => (Win32FileHandle::open_write(&temp_path, true, false, false)?, false),
             }
         } else {
-            (Win32FileHandle::open_write(dst_path, true, false, false)?, false)
+            (Win32FileHandle::open_write(&temp_path, true, false, false)?, false)
         };
 
         if total_size > 0 {
             if let Err(e) = dst_file.preallocate_size(total_size) {
-                tracing::warn!("Preallocate size failed for {:?}: {}. Continuing with dynamic allocation.", dst_path, e);
+                tracing::warn!("Preallocate size failed for {:?}: {}. Continuing with dynamic allocation.", temp_path, e);
             }
         }
 
@@ -153,118 +151,183 @@ impl FileCopier {
         };
 
         let mut buffer = self.buffer_pool.acquire();
-        let mut total_copied: u64 = 0;
 
-        while total_copied < total_size {
-            // Check cancellation
-            if cancel_flag.load(Ordering::SeqCst) {
-                self.buffer_pool.release(buffer);
-                drop(dst_file);
-                drop(src_file);
-                if !dst_existed_before || total_copied > 0 {
-                    cleanup_cancelled_file(dst_path);
-                }
-                return Err(TransferError::Canceled);
-            }
+        let copy_result: Result<u64> = (|| {
+            let mut total_copied: u64 = 0;
 
-            // Check file skip
-            if let Some(ref skip) = skip_flag {
-                if skip.load(Ordering::SeqCst) {
-                    skip.store(false, Ordering::SeqCst);
-                    self.buffer_pool.release(buffer);
-                    drop(dst_file);
-                    drop(src_file);
-                    if !dst_existed_before || total_copied > 0 {
-                        cleanup_cancelled_file(dst_path);
-                    }
-                    return Err(TransferError::SkippedByUser);
-                }
-            }
-
-            // Handle pause state
-            while pause_flag.load(Ordering::Relaxed) {
+            while total_copied < total_size {
                 if cancel_flag.load(Ordering::SeqCst) {
-                    self.buffer_pool.release(buffer);
-                    drop(dst_file);
-                    drop(src_file);
-                    if !dst_existed_before || total_copied > 0 {
-                        cleanup_cancelled_file(dst_path);
-                    }
                     return Err(TransferError::Canceled);
                 }
+
                 if let Some(ref skip) = skip_flag {
                     if skip.load(Ordering::SeqCst) {
                         skip.store(false, Ordering::SeqCst);
-                        self.buffer_pool.release(buffer);
-                        drop(dst_file);
-                        drop(src_file);
-                        if !dst_existed_before || total_copied > 0 {
-                            cleanup_cancelled_file(dst_path);
-                        }
                         return Err(TransferError::SkippedByUser);
                     }
                 }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
 
-            let slice = buffer.as_mut_slice();
-            let max_chunk = std::cmp::min(slice.len(), effective_buf_size);
-            let remaining = (total_size - total_copied) as usize;
-            let raw_to_read = std::cmp::min(max_chunk, remaining);
-
-            let (_read_bytes, valid_bytes) = if src_is_direct {
-                let aligned_to_read = raw_to_read.div_ceil(SECTOR_SIZE) * SECTOR_SIZE;
-                let actual_read = src_file.read_sync(&mut slice[..aligned_to_read])?;
-                let valid = std::cmp::min(actual_read, raw_to_read);
-                (actual_read, valid)
-            } else {
-                let actual_read = src_file.read_exact_sync(&mut slice[..raw_to_read])?;
-                (actual_read, actual_read)
-            };
-
-            if valid_bytes == 0 {
-                break;
-            }
-
-            // Hash on-the-fly with the true logical payload bytes
-            if let Some(ref mut h) = hasher {
-                h.update(&slice[..valid_bytes]);
-            }
-
-            // Write to destination
-            if dst_is_direct {
-                if valid_bytes % SECTOR_SIZE == 0 {
-                    dst_file.write_all_sync(&slice[..valid_bytes])?;
-                } else {
-                    // Final slack sector: zero-pad buffer up to sector boundary, write full sector, then truncate
-                    let aligned_write = valid_bytes.div_ceil(SECTOR_SIZE) * SECTOR_SIZE;
-                    slice[valid_bytes..aligned_write].fill(0);
-                    dst_file.write_all_sync(&slice[..aligned_write])?;
-                    let _ = dst_file.set_length(total_size);
+                while pause_flag.load(Ordering::Relaxed) {
+                    if cancel_flag.load(Ordering::SeqCst) {
+                        return Err(TransferError::Canceled);
+                    }
+                    if let Some(ref skip) = skip_flag {
+                        if skip.load(Ordering::SeqCst) {
+                            skip.store(false, Ordering::SeqCst);
+                            return Err(TransferError::SkippedByUser);
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
                 }
-            } else {
-                dst_file.write_all_sync(&slice[..valid_bytes])?;
+
+                let slice = buffer.as_mut_slice();
+                let max_chunk = std::cmp::min(slice.len(), effective_buf_size);
+                let remaining = (total_size - total_copied) as usize;
+                let raw_to_read = std::cmp::min(max_chunk, remaining);
+
+                let (_read_bytes, valid_bytes) = if src_is_direct {
+                    let aligned_to_read = raw_to_read.div_ceil(SECTOR_SIZE) * SECTOR_SIZE;
+                    let actual_read = src_file.read_sync(&mut slice[..aligned_to_read])?;
+                    let valid = std::cmp::min(actual_read, raw_to_read);
+                    (actual_read, valid)
+                } else {
+                    let actual_read = src_file.read_exact_sync(&mut slice[..raw_to_read])?;
+                    (actual_read, actual_read)
+                };
+
+                if valid_bytes == 0 {
+                    break;
+                }
+
+                // Hash the true logical payload bytes
+                if let Some(ref mut h) = hasher {
+                    h.update(&slice[..valid_bytes]);
+                }
+
+                if dst_is_direct {
+                    if valid_bytes % SECTOR_SIZE == 0 {
+                        dst_file.write_all_sync(&slice[..valid_bytes])?;
+                    } else {
+                        // Final slack sector: zero-pad to the sector boundary; the real length is
+                        // restored with set_length() after the loop.
+                        let aligned_write = valid_bytes.div_ceil(SECTOR_SIZE) * SECTOR_SIZE;
+                        slice[valid_bytes..aligned_write].fill(0);
+                        dst_file.write_all_sync(&slice[..aligned_write])?;
+                    }
+                } else {
+                    dst_file.write_all_sync(&slice[..valid_bytes])?;
+                }
+
+                total_copied += valid_bytes as u64;
+                progress_cb(total_copied);
             }
 
-            total_copied += valid_bytes as u64;
-            progress_cb(total_copied);
-        }
+            if total_copied != total_size {
+                return Err(TransferError::Io(format!(
+                    "Short read from source {:?}: copied {} of {} bytes",
+                    src_path, total_copied, total_size
+                )));
+            }
+
+            // A source that grew or shrank while being copied would produce a torn snapshot.
+            if src_file.get_size()? != total_size {
+                return Err(TransferError::Io(format!(
+                    "Source file changed during copy: {:?}",
+                    src_path
+                )));
+            }
+
+            if dst_is_direct && total_size % SECTOR_SIZE as u64 != 0 {
+                dst_file.set_length(total_size)?;
+            }
+
+            // Make the data durable before it replaces an existing destination.
+            dst_file.flush_sync()?;
+
+            Ok(total_copied)
+        })();
 
         self.buffer_pool.release(buffer);
-        if dst_is_direct && total_size % SECTOR_SIZE as u64 != 0 {
-            let _ = dst_file.set_length(total_size);
-        }
+
+        let total_copied = match copy_result {
+            Ok(n) => n,
+            Err(e) => {
+                drop(dst_file);
+                drop(src_file);
+                cleanup_cancelled_file(&temp_path);
+                return Err(e);
+            }
+        };
+
         drop(dst_file);
         drop(src_file);
 
-        if cancel_flag.load(Ordering::SeqCst) {
-            if !dst_existed_before || total_copied > 0 {
-                cleanup_cancelled_file(dst_path);
-            }
-            return Err(TransferError::Canceled);
+        if let Err(e) = finalize_partial_file(&temp_path, dst_path) {
+            cleanup_cancelled_file(&temp_path);
+            return Err(e);
         }
 
         Ok(total_copied)
+    }
+}
+
+/// Generates a unique temporary sibling path on the destination volume so the final
+/// MoveFileExW replacement is a same-volume, atomic metadata operation.
+fn partial_path(dst_path: &Path) -> PathBuf {
+    let seq = PARTIAL_FILE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let name = format!(".dnpart-{}-{}.tmp", std::process::id(), seq);
+    match dst_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(name),
+        _ => PathBuf::from(name),
+    }
+}
+
+/// Replaces the destination with the completed temporary file, retrying once if the
+/// existing destination is read-only.
+fn finalize_partial_file(temp_path: &Path, dst_path: &Path) -> Result<()> {
+    use windows::Win32::Foundation::GetLastError;
+    use windows::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+    use windows::core::PCWSTR;
+
+    let move_file = || -> std::result::Result<(), windows::core::Error> {
+        let wide_temp = Win32FileHandle::to_wide_path(temp_path);
+        let wide_dst = Win32FileHandle::to_wide_path(dst_path);
+        unsafe {
+            MoveFileExW(
+                PCWSTR(wide_temp.as_ptr()),
+                PCWSTR(wide_dst.as_ptr()),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        }
+    };
+
+    match move_file() {
+        Ok(()) => Ok(()),
+        Err(first_error) => {
+            // Another process may have set READONLY on the destination after our initial check.
+            if dst_path.exists() {
+                if let Ok(metadata) = std::fs::metadata(dst_path) {
+                    let mut perms = metadata.permissions();
+                    if perms.readonly() {
+                        #[allow(clippy::permissions_set_readonly_false)]
+                        perms.set_readonly(false);
+                        let _ = std::fs::set_permissions(dst_path, perms);
+                        if let Ok(()) = move_file() {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            Err(TransferError::Win32 {
+                code: unsafe { GetLastError().0 },
+                message: format!(
+                    "Failed to finalize copy over {:?}: {}",
+                    dst_path, first_error
+                ),
+            })
+        }
     }
 }
 
@@ -307,9 +370,12 @@ pub fn cleanup_cancelled_file(dst_path: &Path) -> bool {
     deleted
 }
 
-/// Reliably deletes a cancelled file and any resulting empty parent directories up to root/desktop or specified stop_dir.
-pub fn cleanup_cancelled_file_and_empty_parents(dst_path: &Path, stop_dir: Option<&Path>) -> bool {
-    cleanup_cancelled_file(dst_path);
+/// Removes directories left empty by a cancelled copy. Never touches an existing destination
+/// file: on cancellation the finalized or pre-existing file must survive.
+pub fn cleanup_cancelled_empty_parents(dst_path: &Path, stop_dir: Option<&Path>) -> bool {
+    if dst_path.exists() {
+        return false;
+    }
 
     let clean_path = crate::util::sanitize_path(dst_path);
     let clean_stop = stop_dir.map(crate::util::sanitize_path);

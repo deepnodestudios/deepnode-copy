@@ -1,9 +1,10 @@
-# DeepNode Copy - signs a single file with the "CN=DeepNode Studios" certificate used by earlier releases.
+# DeepNode Copy - signs a single file with the "CN=DeepNode Studios" certificate shared with
+# DeepNode Download Manager (DDM).
 # Used by Tauri's bundle.windows.signCommand (main exe, installer, uninstaller, NSIS plugins) and for
 # deepnode_shell.dll before bundling. The certificate is taken from the CurrentUser\My store by thumbprint.
 param (
     [Parameter(Mandatory = $true)][string]$File,
-    [string]$Thumbprint = $(if ($env:DEEPNODE_SIGNING_THUMBPRINT) { $env:DEEPNODE_SIGNING_THUMBPRINT } else { "CD49095665273FCDBD7B0C34052F110B8A4F748E" })
+    [string]$Thumbprint = $(if ($env:DEEPNODE_SIGNING_THUMBPRINT) { $env:DEEPNODE_SIGNING_THUMBPRINT } else { "548A57C15C1AAAACAC7EDE40AE73042D42295EC9" })
 )
 
 $ErrorActionPreference = "Stop"

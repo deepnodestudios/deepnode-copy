@@ -24,6 +24,34 @@ import { Language, translations } from "./i18n";
 
 const POPUP_REMEMBER_KEY = "deepnode_copy_popup_remember";
 const POPUP_LAST_CHOICE_KEY = "deepnode_copy_popup_last_choice";
+const SETTING_ON_FINISH = "deepnode_copy_on_finish";
+const SETTING_CONFLICT = "deepnode_copy_conflict_policy";
+const SETTING_VERIFY = "deepnode_copy_verify_mode";
+const SETTING_HASH = "deepnode_copy_hash_algorithm";
+const SETTING_DIRECT_IO = "deepnode_copy_direct_io";
+
+const readStoredSetting = (key: string, fallback: string, allowed: string[]): string => {
+  try {
+    const saved = localStorage.getItem(key);
+    if (saved && allowed.includes(saved)) {
+      return saved;
+    }
+  } catch {
+    // ignore
+  }
+  return fallback;
+};
+
+const readOnFinishSetting = (): string => {
+  const saved = readStoredSetting(SETTING_ON_FINISH, "do_nothing", [
+    "do_nothing",
+    "close",
+    "close_app",
+    "sleep",
+    "shutdown",
+  ]);
+  return saved === "close" ? "close_app" : saved;
+};
 
 export const App: React.FC = () => {
   const [isCompact, setIsCompact] = useState(false);
@@ -32,6 +60,7 @@ export const App: React.FC = () => {
   const [verifyModalOpen, setVerifyModalOpen] = useState(false);
   const [aboutModalOpen, setAboutModalOpen] = useState(false);
   const [copyPasteModalOpen, setCopyPasteModalOpen] = useState(false);
+  const [launchMode, setLaunchMode] = useState<"copy" | "move">("copy");
   const [isInitialized, setIsInitialized] = useState(false);
   const [activeConflict, setActiveConflict] = useState<ConflictInfo | null>(null);
   const [isContextMenuRegistered, setIsContextMenuRegistered] = useState<boolean>(false);
@@ -117,12 +146,56 @@ export const App: React.FC = () => {
   const previewRequestIdRef = React.useRef(0);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
 
-  // Transfer settings
-  const [onFinishAction, setOnFinishAction] = useState("do_nothing");
-  const [conflictPolicy, setConflictPolicy] = useState("ask");
-  const [verifyMode, setVerifyMode] = useState("always");
-  const [hashAlgorithm, setHashAlgorithm] = useState("xxhash3");
-  const [directIo, setDirectIo] = useState(false);
+  // Transfer settings (persisted so the next popup/session uses the same choices)
+  const [onFinishAction, setOnFinishAction] = useState(() => readOnFinishSetting());
+  const [conflictPolicy, setConflictPolicy] = useState(() =>
+    readStoredSetting(SETTING_CONFLICT, "ask", ["ask", "older", "rename", "skip", "overwrite"])
+  );
+  const [verifyMode, setVerifyMode] = useState(() =>
+    readStoredSetting(SETTING_VERIFY, "always", ["always", "ondifference", "never"])
+  );
+  const [hashAlgorithm, setHashAlgorithm] = useState(() =>
+    readStoredSetting(SETTING_HASH, "xxhash3", ["xxhash3", "xxhash128", "blake3", "sha256", "md5"])
+  );
+  const [directIo, setDirectIo] = useState(
+    () => readStoredSetting(SETTING_DIRECT_IO, "false", ["true", "false"]) === "true"
+  );
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SETTING_ON_FINISH, onFinishAction);
+    } catch {
+      // ignore
+    }
+  }, [onFinishAction]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(SETTING_CONFLICT, conflictPolicy);
+    } catch {
+      // ignore
+    }
+  }, [conflictPolicy]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(SETTING_VERIFY, verifyMode);
+    } catch {
+      // ignore
+    }
+  }, [verifyMode]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(SETTING_HASH, hashAlgorithm);
+    } catch {
+      // ignore
+    }
+  }, [hashAlgorithm]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(SETTING_DIRECT_IO, directIo ? "true" : "false");
+    } catch {
+      // ignore
+    }
+  }, [directIo]);
 
   // Staged sources and destination workstation
   const [stagedSources, setStagedSources] = useState<string[]>([]);
@@ -152,6 +225,33 @@ export const App: React.FC = () => {
     transferStatus === "transferring" || transferStatus === "scanning" || transferStatus === "paused";
   const isPaused = transferStatus === "paused";
 
+  const [excludedPaths, setExcludedPaths] = useState<string[]>([]);
+
+  const isCompactRef = React.useRef(isCompact);
+  const isTransferringRef = React.useRef(isTransferring);
+  const transferSettingsRef = React.useRef({
+    onFinishAction,
+    conflictPolicy,
+    verifyMode,
+    hashAlgorithm,
+    directIo,
+  });
+  useEffect(() => {
+    isCompactRef.current = isCompact;
+  }, [isCompact]);
+  useEffect(() => {
+    isTransferringRef.current = isTransferring;
+  }, [isTransferring]);
+  useEffect(() => {
+    transferSettingsRef.current = {
+      onFinishAction,
+      conflictPolicy,
+      verifyMode,
+      hashAlgorithm,
+      directIo,
+    };
+  }, [onFinishAction, conflictPolicy, verifyMode, hashAlgorithm, directIo]);
+
   useEffect(() => {
     document.documentElement.dir = lang === "ar" ? "rtl" : "ltr";
     document.documentElement.lang = lang;
@@ -160,7 +260,7 @@ export const App: React.FC = () => {
   const updatePreview = async (sources: string[]) => {
     const reqId = ++previewRequestIdRef.current;
 
-    if (isTransferring) {
+    if (isTransferringRef.current) {
       return;
     }
     if (sources.length === 0) {
@@ -200,6 +300,8 @@ export const App: React.FC = () => {
     let unlistenFn: (() => void) | null = null;
     let unlistenDragDrop: (() => void) | null = null;
     let unlistenPopup: (() => void) | null = null;
+    let unlistenRestore: (() => void) | null = null;
+    let unlistenCli: (() => void) | null = null;
 
     const setupApp = async () => {
       // 0. Listen for native OS drag & drop events from Windows Explorer
@@ -354,26 +456,32 @@ export const App: React.FC = () => {
               setTransferStatus("transferring");
               break;
 
-            case "TransferCompleted":
+            case "TransferCompleted": {
               if (isCanceledRef.current) {
                 setTransferStatus("canceled");
                 break;
               }
-              setStats(data.payload);
-              setTransferStatus((prev) => (prev === "canceled" ? "canceled" : "completed"));
+              const completedStats = data.payload;
+              const hasFailures = completedStats.failed_files > 0;
+              setStats(completedStats);
+              setTransferStatus((prev) =>
+                prev === "canceled" ? "canceled" : hasFailures ? "failed" : "completed"
+              );
               Sentry.addBreadcrumb({
                 category: "transfer",
-                message: `Transfer completed: ${data.payload.completed_files}/${data.payload.total_files} files (${data.payload.transferred_bytes} bytes)`,
-                level: "info",
+                message: `Transfer completed: ${completedStats.completed_files}/${completedStats.total_files} files (${completedStats.transferred_bytes} bytes, ${completedStats.failed_files} failed)`,
+                level: hasFailures ? "warning" : "info",
               });
-              if (isCompact || onFinishAction === "close_app") {
-                if (data.payload.failed_files === 0) {
-                  setTimeout(() => {
-                    handleCloseApp();
-                  }, 1200);
-                }
+              if (
+                !hasFailures &&
+                (isCompactRef.current || transferSettingsRef.current.onFinishAction === "close_app")
+              ) {
+                setTimeout(() => {
+                  handleCloseApp();
+                }, 1200);
               }
               break;
+            }
 
             case "TransferCanceled":
               isCanceledRef.current = true;
@@ -423,7 +531,7 @@ export const App: React.FC = () => {
 
       // 1.1 Listen for Explorer Ctrl+V / Drag-Drop interceptor modal trigger
       try {
-        const unlisten = await listen<{ sources: string[]; destination: string }>(
+        const unlisten = await listen<{ sources: string[]; destination: string; mode?: string }>(
           "open_copy_paste_modal",
           (event) => {
             if (!isMounted) return;
@@ -431,6 +539,7 @@ export const App: React.FC = () => {
               setStagedSources(event.payload.sources);
               updatePreview(event.payload.sources);
               setDestination(event.payload.destination || "");
+              setLaunchMode(event.payload.mode === "move" ? "move" : "copy");
               setCopyPasteModalOpen(true);
             }
           }
@@ -446,13 +555,15 @@ export const App: React.FC = () => {
 
       // 1.15 Listen for main window restore signal from primary/secondary instance activation
       try {
-        const unlistenRestore = await listen("restore_main_ui", () => {
+        const unlisten = await listen("restore_main_ui", () => {
           if (!isMounted) return;
           setCopyPasteModalOpen(false);
           setIsCompact(false);
         });
         if (!isMounted) {
-          unlistenRestore();
+          unlisten();
+        } else {
+          unlistenRestore = unlisten;
         }
       } catch (err) {
         console.error("Error setting up restore_main_ui listener:", err);
@@ -471,10 +582,13 @@ export const App: React.FC = () => {
           if (p.sources && p.sources.length > 0) {
             setStagedSources(p.sources);
             updatePreview(p.sources);
+            setLaunchMode(p.mode === "move" ? "move" : "copy");
             if (p.destination) {
               setDestination(p.destination);
             }
             if (p.auto_start && p.destination) {
+              const settings = transferSettingsRef.current;
+              setExcludedPaths([]);
               setIsCompact(true);
               invoke("toggle_compact_mode", { compact: true }).catch(() => {});
               setTransferStatus("transferring");
@@ -483,11 +597,11 @@ export const App: React.FC = () => {
                   sources: p.sources,
                   destination: p.destination,
                   mode: p.mode || "copy",
-                  verifyMode: "always",
-                  hashAlgorithm: "xxhash3",
-                  conflictPolicy: "ask",
-                  directIo: false,
-                  onFinish: "do_nothing",
+                  verifyMode: settings.verifyMode,
+                  hashAlgorithm: settings.hashAlgorithm,
+                  conflictPolicy: settings.conflictPolicy,
+                  directIo: settings.directIo,
+                  onFinish: settings.onFinishAction,
                 });
                 if (init && init.items) {
                   setStats((prev) => ({
@@ -501,12 +615,15 @@ export const App: React.FC = () => {
                 }
               } catch (e) {
                 console.error("Auto transfer start error:", e);
+                setTransferStatus("failed");
               }
             }
           }
         });
         if (!isMounted) {
           unlisten();
+        } else {
+          unlistenCli = unlisten;
         }
       } catch (err) {
         console.error("Error setting up cli_args_forwarded listener:", err);
@@ -553,6 +670,7 @@ export const App: React.FC = () => {
         if (args.sources && args.sources.length > 0) {
           setStagedSources(args.sources);
           updatePreview(args.sources);
+          setLaunchMode(args.mode === "move" ? "move" : "copy");
           if (args.destination) {
             setDestination(args.destination);
           }
@@ -562,6 +680,8 @@ export const App: React.FC = () => {
           } else if (args.auto_start && args.destination) {
             if (isStartingTransferRef.current) return;
             isStartingTransferRef.current = true;
+            const settings = transferSettingsRef.current;
+            setExcludedPaths([]);
             // Automatically launch transfer
             setIsCompact(true);
             invoke("toggle_compact_mode", { compact: true }).catch(() => {});
@@ -572,11 +692,11 @@ export const App: React.FC = () => {
                 sources: args.sources,
                 destination: args.destination,
                 mode: args.mode || "copy",
-                verifyMode: "always",
-                hashAlgorithm: "xxhash3",
-                conflictPolicy: args.conflict_policy || "ask",
-                directIo: false,
-                onFinish: args.on_finish || "do_nothing",
+                verifyMode: settings.verifyMode,
+                hashAlgorithm: settings.hashAlgorithm,
+                conflictPolicy: args.conflict_policy || settings.conflictPolicy,
+                directIo: settings.directIo,
+                onFinish: args.on_finish || settings.onFinishAction,
               });
 
               if (init && init.items) {
@@ -625,9 +745,12 @@ export const App: React.FC = () => {
     setupApp();
 
     return () => {
+      isMounted = false;
       if (unlistenFn) unlistenFn();
       if (unlistenDragDrop) unlistenDragDrop();
       if (unlistenPopup) unlistenPopup();
+      if (unlistenRestore) unlistenRestore();
+      if (unlistenCli) unlistenCli();
     };
   }, []);
 
@@ -643,6 +766,7 @@ export const App: React.FC = () => {
     try {
       const picked = await invoke<string[]>("pick_source_files");
       if (picked && picked.length > 0) {
+        setExcludedPaths([]);
         setStagedSources((prev) => {
           const updated = Array.from(new Set([...prev, ...picked]));
           updatePreview(updated);
@@ -658,6 +782,7 @@ export const App: React.FC = () => {
     try {
       const folder = await invoke<string | null>("pick_source_folder");
       if (folder) {
+        setExcludedPaths([]);
         setStagedSources((prev) => {
           const updated = Array.from(new Set([...prev, folder]));
           updatePreview(updated);
@@ -684,6 +809,7 @@ export const App: React.FC = () => {
     const toRemove = new Set(Array.isArray(indices) ? indices : [indices]);
     if (toRemove.size === 0) return;
 
+    setExcludedPaths([]);
     setStagedSources((prev) => {
       const updated = prev.filter((_, idx) => !toRemove.has(idx));
       if (updated.length === 0) {
@@ -696,9 +822,11 @@ export const App: React.FC = () => {
   };
 
   const handleClearStaged = () => {
+    if (isTransferringRef.current) return;
     setStagedSources([]);
     setStagedPreview(null);
     setFiles([]);
+    setExcludedPaths([]);
   };
 
   const handleStartTransfer = async (mode: "copy" | "move", overridePolicy?: string) => {
@@ -741,6 +869,7 @@ export const App: React.FC = () => {
         conflictPolicy: overridePolicy || conflictPolicy,
         directIo,
         onFinish: onFinishAction,
+        excludePaths: excludedPaths,
       });
 
       if (init && init.items) {
@@ -839,14 +968,22 @@ export const App: React.FC = () => {
   };
 
   const handleRemoveQueued = async (ids: number[]) => {
-    if (!isTransferring) {
-      setFiles((prev) => {
-        const remaining = prev.filter((f) => !ids.includes(f.id));
-        const total_files = remaining.length;
-        const total_bytes = remaining.reduce((acc, f) => acc + f.size, 0);
-        setStats((s) => ({ ...s, total_files, total_bytes }));
-        return remaining;
-      });
+    if (!isTransferringRef.current) {
+      const removed = files.filter((f) => ids.includes(f.id));
+      if (removed.length === 0) return;
+      const remaining = files.filter((f) => !ids.includes(f.id));
+      if (remaining.length === 0) {
+        handleClearStaged();
+        return;
+      }
+      // The engine rescans the staged sources, so removed preview entries must be excluded explicitly.
+      setExcludedPaths((prev) => Array.from(new Set([...prev, ...removed.map((f) => f.src_path)])));
+      setFiles(remaining);
+      setStats((s) => ({
+        ...s,
+        total_files: remaining.length,
+        total_bytes: remaining.reduce((acc, f) => acc + f.size, 0),
+      }));
       return;
     }
     try {
@@ -875,11 +1012,20 @@ export const App: React.FC = () => {
   };
 
   const handleResetToIdle = () => {
+    if (isTransferringRef.current) {
+      alert(
+        lang === "tr"
+          ? "Aktif aktarım sürerken kuyruk temizlenemez. Önce duraklatıp iptal edin."
+          : "The queue cannot be cleared during an active transfer. Pause and cancel it first."
+      );
+      return;
+    }
     isCanceledRef.current = false;
     setTransferStatus("idle");
     setFiles([]);
     setStagedSources([]);
     setStagedPreview(null);
+    setExcludedPaths([]);
     setStats({
       total_files: 0,
       completed_files: 0,
@@ -904,6 +1050,7 @@ export const App: React.FC = () => {
       return;
     }
     isStartingTransferRef.current = true;
+    isCanceledRef.current = false;
     try {
       await invoke("retry_failed_transfer");
       setTransferStatus("transferring");
@@ -989,6 +1136,8 @@ export const App: React.FC = () => {
       alert(lang === "tr" ? "Aktif bir aktarım devam ederken yeni bir aktarım yüklenemez." : "Cannot load transfer while another transfer is active.");
       return;
     }
+    isCanceledRef.current = false;
+    setExcludedPaths([]);
     if (sources.length > 0) {
       setStagedSources(sources);
       updatePreview(sources);
@@ -996,7 +1145,7 @@ export const App: React.FC = () => {
     if (dest) {
       setDestination(dest);
     }
-    if (transferStatus === "completed" || transferStatus === "canceled") {
+    if (transferStatus === "completed" || transferStatus === "canceled" || transferStatus === "failed") {
       setTransferStatus("idle");
     }
   };
@@ -1024,6 +1173,7 @@ export const App: React.FC = () => {
       {copyPasteModalOpen ? (
         <CopyPasteModal
           isOpen={true}
+          mode={launchMode}
           source={
             stagedSources.length > 1
               ? `${stagedSources[0]} (+${stagedSources.length - 1} ${translations[lang]?.selectedItems || "öğe"})`
@@ -1045,9 +1195,13 @@ export const App: React.FC = () => {
               await invoke("explorer_copy", {
                 sources: stagedSources,
                 destination: destination || "",
+                mode: launchMode,
               });
             } catch (e) {
               console.error("Explorer copy failed:", e);
+              alert(`${getTranslation().statusFailed}: ${e}`);
+              setCopyPasteModalOpen(true);
+              return;
             }
             try {
               await Sentry.flush(1500).catch(() => false); // send queued events before the process exits
@@ -1056,7 +1210,7 @@ export const App: React.FC = () => {
               console.error(e);
             }
           }}
-          onSelectDeepNodeCopy={async (policy) => {
+          onSelectDeepNodeCopy={async () => {
             setCopyPasteModalOpen(false);
             setIsCompact(true);
             try {
@@ -1066,18 +1220,7 @@ export const App: React.FC = () => {
             } catch (e) {
               console.error(e);
             }
-            handleStartTransfer("copy", policy);
-          }}
-          onSelectDeepNodeMove={async () => {
-            setCopyPasteModalOpen(false);
-            setIsCompact(true);
-            try {
-              await invoke("toggle_compact_mode", { compact: true });
-              await invoke("set_always_on_top", { alwaysOnTop });
-            } catch (e) {
-              console.error(e);
-            }
-            handleStartTransfer("move");
+            handleStartTransfer(launchMode);
           }}
           lang={lang}
           rememberChoice={rememberPopupChoice}
@@ -1093,10 +1236,12 @@ export const App: React.FC = () => {
           status={transferStatus}
           speedHistory={speedHistory}
           alwaysOnTop={alwaysOnTop}
+          directIo={directIo}
           onToggleAlwaysOnTop={handleToggleAlwaysOnTop}
           onPauseToggle={handlePauseToggle}
           onCancel={handleCancel}
           onSkip={handleSkipCurrent}
+          onRetryFailed={handleRetryFailed}
           onExpand={() => handleToggleCompact(false)}
           onOpenVerify={() => setVerifyModalOpen(true)}
           onOpenAbout={() => setAboutModalOpen(true)}

@@ -10,7 +10,7 @@
 //!     a move; anything else (shortcut, Alt-drag...) is left to Explorer.
 //!   * A move inside one volume stays with Explorer (instant rename, nothing to copy).
 //!   * Explorer then calls `InvokeCommand` on our default item instead of copying natively, and we
-//!     open DeepNode Copy's choice window (Explorer / Copy / Replace older / Move).
+//!     open DeepNode Copy's choice window (Explorer / DeepNode Copy).
 
 use std::path::{Component, Path, PathBuf, Prefix};
 use std::sync::Mutex;
@@ -89,6 +89,7 @@ impl IShellExtInit_Impl for DeepNodeDragDropHandler_Impl {
             // Always reset previous state to prevent leaking previous drag-and-drop operations
             *self.target_folder.lock().unwrap_or_else(|e| e.into_inner()) = None;
             self.source_files.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            *self.explorer_mode.lock().unwrap_or_else(|e| e.into_inner()) = "copy";
 
             // If Scroll Lock is active, bypass DeepNode Copy immediately
             if !CopyHookHandler::should_intercept_operation() {
@@ -160,16 +161,20 @@ impl IContextMenu_Impl for DeepNodeDragDropHandler_Impl {
                 }
             }
 
-            let mode = match explorer_default {
-                DDIDM_COPY => Some("copy"),
-                DDIDM_MOVE if !srcs.iter().all(|s| same_volume(s, &target)) => Some("move"),
-                _ => None,
+            let (mode, take_over_eligible) = match explorer_default {
+                DDIDM_COPY => (Some("copy"), true),
+                // Same-volume moves stay with Explorer (instant rename); still remember the
+                // intended mode in case the user explicitly picks our popup item.
+                DDIDM_MOVE => (Some("move"), !srcs.iter().all(|s| same_volume(s, &target))),
+                _ => (None, false),
             };
 
             let mut take_over = false;
             if let Some(mode) = mode {
                 *self.explorer_mode.lock().unwrap_or_else(|e| e.into_inner()) = mode;
-                take_over = unsafe { SetMenuDefaultItem(hmenu, id_cmd_first + CMD_POPUP, 0) }.is_ok();
+                if take_over_eligible {
+                    take_over = unsafe { SetMenuDefaultItem(hmenu, id_cmd_first + CMD_POPUP, 0) }.is_ok();
+                }
             }
 
             crate::util::log_shell(&format!(
@@ -368,7 +373,7 @@ fn volume_key(path: &Path) -> Option<String> {
     }
 }
 
-fn same_volume(a: &Path, b: &Path) -> bool {
+pub(crate) fn same_volume(a: &Path, b: &Path) -> bool {
     matches!((volume_key(a), volume_key(b)), (Some(x), Some(y)) if x == y)
 }
 

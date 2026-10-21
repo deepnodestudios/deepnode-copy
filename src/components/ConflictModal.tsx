@@ -30,6 +30,11 @@ export const ConflictModal: React.FC<ConflictModalProps> = ({
   isCompact = false,
 }) => {
   const [applyToAll, setApplyToAll] = useState(false);
+  const conflictId = conflict?.file_id;
+
+  React.useEffect(() => {
+    setApplyToAll(false);
+  }, [conflictId]);
 
   if (!conflict) return null;
 

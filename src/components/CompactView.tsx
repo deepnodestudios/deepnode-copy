@@ -1,5 +1,5 @@
 import React from "react";
-import { Play, Pause, X, ChevronDown, Pin, Zap, Minus, Maximize2, SkipForward } from "lucide-react";
+import { Play, Pause, X, ChevronDown, Pin, Zap, Minus, Maximize2, SkipForward, RotateCw } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TransferStats, TransferStatus } from "../types";
 import { translations, Language } from "../i18n";
@@ -31,10 +31,12 @@ interface CompactViewProps {
   status: TransferStatus;
   speedHistory: number[];
   alwaysOnTop: boolean;
+  directIo?: boolean;
   onToggleAlwaysOnTop: () => void;
   onPauseToggle: () => void;
   onCancel: () => void;
   onSkip?: () => void;
+  onRetryFailed?: () => void;
   onExpand: () => void;
   onOpenVerify: () => void;
   onOpenAbout: () => void;
@@ -49,10 +51,12 @@ export const CompactView: React.FC<CompactViewProps> = ({
   destination,
   status,
   alwaysOnTop,
+  directIo = false,
   onToggleAlwaysOnTop,
   onPauseToggle,
   onCancel,
   onSkip,
+  onRetryFailed,
   onExpand,
   onCloseApp,
   onMinimizeWindow,
@@ -73,13 +77,13 @@ export const CompactView: React.FC<CompactViewProps> = ({
   const [isHovered, setIsHovered] = React.useState(false);
 
   React.useEffect(() => {
-    // If completed without fatal errors, start 2.5s auto-close timer (matching reference copy tool UX)
-    if (status === "completed") {
+    // Never auto-close when files failed; the user must see and retry the errors.
+    if (status === "completed" && stats.failed_files === 0) {
       setAutoCloseRemaining(2.5);
     } else {
       setAutoCloseRemaining(null);
     }
-  }, [status]);
+  }, [status, stats.failed_files]);
 
   React.useEffect(() => {
     if (autoCloseRemaining === null) return;
@@ -126,10 +130,12 @@ export const CompactView: React.FC<CompactViewProps> = ({
         <div data-tauri-drag-region="deep" className="flex items-center gap-2 min-w-0">
           <img data-tauri-drag-region="deep" src="/branding/app-icon.png" alt="icon" className="w-4 h-4 rounded shadow-sm" />
           <span data-tauri-drag-region="deep" className="text-xs font-bold text-slate-100 tracking-tight">DeepNode Copy</span>
-          <span data-tauri-drag-region="deep" className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-emerald-950/70 text-emerald-400 border border-emerald-500/40 font-bold font-mono">
-            <Zap className="w-2.5 h-2.5 text-emerald-400" />
-            <span>Direct I/O</span>
-          </span>
+          {directIo && (
+            <span data-tauri-drag-region="deep" className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-emerald-950/70 text-emerald-400 border border-emerald-500/40 font-bold font-mono">
+              <Zap className="w-2.5 h-2.5 text-emerald-400" />
+              <span>Direct I/O</span>
+            </span>
+          )}
         </div>
 
         {/* Window controls */}
@@ -274,8 +280,17 @@ export const CompactView: React.FC<CompactViewProps> = ({
             </>
           ) : status === "completed" ? (
             <div data-tauri-drag-region="deep" className="flex items-center gap-2">
-              <span data-tauri-drag-region="deep" className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
-                <span>✔ {lang === "tr" ? "Aktarım Tamamlandı" : "Transfer Completed"}</span>
+              <span
+                data-tauri-drag-region="deep"
+                className={`text-xs font-semibold flex items-center gap-1.5 ${
+                  stats.failed_files > 0 ? "text-amber-400" : "text-emerald-400"
+                }`}
+              >
+                <span>
+                  {stats.failed_files > 0
+                    ? `⚠ ${lang === "tr" ? "Hatalarla Tamamlandı" : "Completed with Errors"} (${stats.failed_files})`
+                    : `✔ ${lang === "tr" ? "Aktarım Tamamlandı" : "Transfer Completed"}`}
+                </span>
               </span>
               {autoCloseRemaining !== null && autoCloseRemaining > 0 && (
                 <span data-tauri-drag-region="deep" className="text-[11px] text-slate-400 font-mono">
@@ -292,6 +307,25 @@ export const CompactView: React.FC<CompactViewProps> = ({
             <span data-tauri-drag-region="deep" className="text-xs font-semibold text-rose-400 flex items-center gap-1.5">
               <span>✕ {lang === "tr" ? "Aktarım İptal Edildi" : "Transfer Canceled"}</span>
             </span>
+          ) : status === "failed" ? (
+            <div data-tauri-drag-region="deep" className="flex items-center gap-2">
+              <span data-tauri-drag-region="deep" className="text-xs font-semibold text-rose-400 flex items-center gap-1.5">
+                <span>
+                  ✕ {lang === "tr" ? "Aktarım Hatalarla Bitti" : "Transfer Finished with Errors"}
+                  {stats.failed_files > 0 ? ` (${stats.failed_files})` : ""}
+                </span>
+              </span>
+              {onRetryFailed && (
+                <button
+                  data-tauri-drag-region="false"
+                  onClick={onRetryFailed}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition cursor-pointer shadow-sm"
+                >
+                  <RotateCw className="w-3.5 h-3.5" />
+                  <span>{lang === "tr" ? "Tekrar Dene" : "Retry"}</span>
+                </button>
+              )}
+            </div>
           ) : (
             <div data-tauri-drag-region="deep" className="flex items-center gap-1.5 text-xs text-slate-400 font-medium">
               <span className="w-2 h-2 rounded-full bg-slate-500" />

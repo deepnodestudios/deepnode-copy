@@ -88,41 +88,46 @@ impl QueueManager {
         F: Fn(QueueTask) -> Fut + Send + Sync + 'static + Clone,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
-        let mut handles = Vec::new();
         loop {
-            let next_task = {
+            // Start a batch no larger than max_concurrent, then wait for it before
+            // picking up more work. Previously every queued task was spawned at once,
+            // ignoring the configured concurrency limit.
+            let batch = {
                 let mut tasks = self.tasks.lock().await;
-                let mut found = None;
+                let mut batch = Vec::new();
                 for t in tasks.iter_mut() {
+                    if batch.len() >= self.max_concurrent {
+                        break;
+                    }
                     let mut s = t.state.lock().await;
                     if *s == TaskState::Queued {
                         *s = TaskState::Running;
-                        found = Some(t.clone());
-                        break;
+                        batch.push(t.clone());
                     }
                 }
-                found
+                batch
             };
 
-            match next_task {
-                Some(task) => {
-                    let exec = executor.clone();
-                    let t_clone = task.clone();
-                    let handle = tokio::spawn(async move {
-                        exec(t_clone.clone()).await;
-                        let mut s = t_clone.state.lock().await;
-                        if *s == TaskState::Running {
-                            *s = TaskState::Completed;
-                        }
-                    });
-                    handles.push(handle);
-                }
-                None => break,
+            if batch.is_empty() {
+                break;
             }
-        }
 
-        for handle in handles {
-            let _ = handle.await;
+            let mut handles = Vec::new();
+            for task in batch {
+                let exec = executor.clone();
+                let t_clone = task.clone();
+                handles.push(tokio::spawn(async move {
+                    exec(t_clone.clone()).await;
+                    let mut s = t_clone.state.lock().await;
+                    if *s == TaskState::Running {
+                        *s = TaskState::Completed;
+                    }
+                }));
+            }
+
+            for handle in handles {
+                let _ = handle.await;
+            }
         }
     }
 }

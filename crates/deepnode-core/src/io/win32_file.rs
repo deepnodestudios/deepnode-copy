@@ -15,7 +15,7 @@ use windows::Win32::Storage::FileSystem::{
     FILE_FLAG_WRITE_THROUGH, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
     FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     CREATE_ALWAYS, OPEN_EXISTING, OPEN_ALWAYS, FILE_BEGIN,
-    ReadFile, WriteFile,
+    ReadFile, WriteFile, FlushFileBuffers,
 };
 use windows::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 use crate::error::{Result, TransferError};
@@ -44,7 +44,8 @@ impl Win32FileHandle {
             }
         };
 
-        let path_str = abs_path.to_string_lossy();
+        // \\?\ disables Win32 path normalization, so forward slashes must be converted here.
+        let path_str = abs_path.to_string_lossy().replace('/', "\\");
         let extended_path = if path_str.starts_with(r"\\?\") || path_str.starts_with(r"\\.\") {
             path_str.to_string()
         } else if let Some(stripped) = path_str.strip_prefix(r"\\") {
@@ -378,6 +379,16 @@ impl Win32FileHandle {
             }
 
             Ok(total_to_write)
+        }
+    }
+
+    /// Flushes buffered file data to disk.
+    pub fn flush_sync(&self) -> Result<()> {
+        unsafe {
+            FlushFileBuffers(self.handle).map_err(|e| TransferError::Win32 {
+                code: GetLastError().0,
+                message: e.to_string(),
+            })
         }
     }
 
