@@ -12,7 +12,7 @@
 
   <Identity Name="DeepNodeCopy" ProcessorArchitecture="x64" 
     Publisher="CN=DeepNode Studios" 
-    Version="0.3.5.0"/>  
+    Version="0.3.6.0"/>  
   <Properties>
     <PublisherDisplayName>DeepNode Studios</PublisherDisplayName>
     <DisplayName>DeepNode Copy Shell Extension</DisplayName>
