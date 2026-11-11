@@ -13,6 +13,8 @@ import {
   StartTransferResult,
   ConflictInfo,
   CurrentTransferState,
+  FilePhase,
+  filePhaseLabel,
 } from "./types";
 import { CompactView } from "./components/CompactView";
 import { ExpandedView } from "./components/ExpandedView";
@@ -220,6 +222,7 @@ export const App: React.FC = () => {
 
   const [files, setFiles] = useState<FileItem[]>([]);
   const [speedHistory, setSpeedHistory] = useState<number[]>([]);
+  const [filePhase, setFilePhase] = useState<FilePhase>(null);
 
   const isTransferring =
     transferStatus === "transferring" || transferStatus === "scanning" || transferStatus === "paused";
@@ -369,6 +372,7 @@ export const App: React.FC = () => {
 
           switch (data.type) {
             case "TransferStarted":
+              setFilePhase(null);
               isCanceledRef.current = false;
               setTransferStatus("transferring");
               setStats((prev) => ({
@@ -403,6 +407,27 @@ export const App: React.FC = () => {
               break;
             }
 
+            case "FileFinalizing":
+              setFilePhase({ kind: "writing" });
+              break;
+
+            case "VerificationStarted":
+              setFilePhase({ kind: "verifying", percent: 0 });
+              break;
+
+            case "VerificationProgress": {
+              const percent =
+                data.payload.total > 0
+                  ? Math.floor((data.payload.verified / data.payload.total) * 100)
+                  : 100;
+              setFilePhase((prev) =>
+                prev?.kind === "verifying" && prev.percent === percent
+                  ? prev
+                  : { kind: "verifying", percent }
+              );
+              break;
+            }
+
             case "FileProgress":
               // Performance optimization: Live file progress is displayed using
               // stats.current_file_transferred and stats.overall_percentage.
@@ -410,6 +435,7 @@ export const App: React.FC = () => {
               break;
 
             case "FileStarted":
+              setFilePhase(null);
               setFiles((prev) => {
                 const existing = prev.find((f) => f.id === data.payload.id);
                 if (existing) {
@@ -427,6 +453,7 @@ export const App: React.FC = () => {
               break;
 
             case "FileCompleted":
+              setFilePhase(null);
               setFiles((prev) =>
                 prev.map((f) =>
                   f.id === data.payload.id
@@ -437,12 +464,14 @@ export const App: React.FC = () => {
               break;
 
             case "FileSkipped":
+              setFilePhase(null);
               setFiles((prev) =>
                 prev.map((f) => (f.id === data.payload.item.id ? data.payload.item : f))
               );
               break;
 
             case "FileFailed":
+              setFilePhase(null);
               setFiles((prev) =>
                 prev.map((f) => (f.id === data.payload.item.id ? data.payload.item : f))
               );
@@ -461,6 +490,7 @@ export const App: React.FC = () => {
                 setTransferStatus("canceled");
                 break;
               }
+              setFilePhase(null);
               const completedStats = data.payload;
               const hasFailures = completedStats.failed_files > 0;
               setStats(completedStats);
@@ -484,6 +514,7 @@ export const App: React.FC = () => {
             }
 
             case "TransferCanceled":
+              setFilePhase(null);
               isCanceledRef.current = true;
               setTransferStatus("canceled");
               setFiles((prev) =>
@@ -507,6 +538,7 @@ export const App: React.FC = () => {
               break;
 
             case "TransferFailed":
+              setFilePhase(null);
               setTransferStatus("failed");
               Sentry.captureMessage(`DeepNode Transfer Failed: ${data.payload}`, "error");
               alert(`${getTranslation().statusFailed}: ${data.payload}`);
@@ -1234,6 +1266,7 @@ export const App: React.FC = () => {
           source={stagedSources[0] || ""}
           destination={destination || ""}
           status={transferStatus}
+          phaseLabel={filePhaseLabel(filePhase, lang)}
           speedHistory={speedHistory}
           alwaysOnTop={alwaysOnTop}
           directIo={directIo}
@@ -1257,6 +1290,7 @@ export const App: React.FC = () => {
           isPaused={isPaused}
           isTransferring={isTransferring}
           transferStatus={transferStatus}
+          phaseLabel={filePhaseLabel(filePhase, lang)}
           alwaysOnTop={alwaysOnTop}
           onPauseToggle={handlePauseToggle}
           onCancel={handleCancel}

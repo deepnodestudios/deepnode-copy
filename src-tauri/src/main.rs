@@ -2008,6 +2008,11 @@ fn spawn_transfer_worker(
                     log_engine("worker thread calling coordinator.run()...");
                     let stats_result = coordinator.run().await;
                     let failed_items = coordinator.get_failed_items();
+                    // The coordinator's own items and stats are authoritative. The shared UI state is
+                    // filled by the event forwarder, which may still be behind and never carries
+                    // hashes or error messages.
+                    let final_items = coordinator.items().to_vec();
+                    let final_stats = stats_result.as_ref().ok().cloned();
                     *last_failed.lock().await = coordinator.get_retryable_items();
                     log_engine(&format!(
                         "coordinator.run completed: stats_result={:?}",
@@ -2066,7 +2071,7 @@ fn spawn_transfer_worker(
                             "completed"
                         };
 
-                        let file_records: Vec<deepnode_db::FileRecord> = cur.files.iter().map(|f| deepnode_db::FileRecord {
+                        let file_records: Vec<deepnode_db::FileRecord> = final_items.iter().map(|f| deepnode_db::FileRecord {
                             id: None,
                             session_id,
                             src_path: f.src_path.to_string_lossy().to_string(),
@@ -2091,14 +2096,15 @@ fn spawn_transfer_worker(
                                 log_engine(&format!("CRITICAL: insert_files_batch failed: {}", e));
                                 tracing::error!("insert_files_batch failed: {}", e);
                             }
+                            let stats = final_stats.as_ref().unwrap_or(&cur.stats);
                             if let Err(e) = db.update_session_finish(
                                 session_id,
                                 final_status,
-                                cur.stats.completed_files,
-                                cur.stats.skipped_files,
-                                cur.stats.failed_files,
-                                cur.stats.transferred_bytes,
-                                cur.stats.average_speed_bps as f64,
+                                stats.completed_files,
+                                stats.skipped_files,
+                                stats.failed_files,
+                                stats.transferred_bytes,
+                                stats.average_speed_bps as f64,
                             ) {
                                 log_engine(&format!("CRITICAL: update_session_finish failed: {}", e));
                                 tracing::error!("update_session_finish failed: {}", e);

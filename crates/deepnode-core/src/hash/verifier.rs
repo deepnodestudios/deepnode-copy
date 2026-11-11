@@ -11,10 +11,20 @@ pub struct HashVerifier;
 impl HashVerifier {
     /// Computes hash of a file using unbuffered direct I/O where possible to bypass OS file cache.
     pub fn compute_file_hash(path: &Path, algo: HashAlgorithm, bypass_cache: bool) -> Result<String> {
+        Self::compute_file_hash_with_progress(path, algo, bypass_cache, |_, _| {})
+    }
+
+    /// Same as `compute_file_hash`, reporting `(bytes_hashed, file_size)` after every block.
+    pub fn compute_file_hash_with_progress(
+        path: &Path,
+        algo: HashAlgorithm,
+        bypass_cache: bool,
+        mut progress: impl FnMut(u64, u64),
+    ) -> Result<String> {
         let file = Win32FileHandle::open_read(path, bypass_cache, false)?;
         let file_size = file.get_size()?;
         let mut hasher = MultiHasher::new(algo);
-        let mut buffer = AlignedBuffer::new(1024 * 1024, 4096);
+        let mut buffer = AlignedBuffer::new(4 * 1024 * 1024, 4096);
         let mut remaining = file_size;
 
         loop {
@@ -28,6 +38,7 @@ impl HashVerifier {
             let valid_bytes = std::cmp::min(read_bytes as u64, remaining) as usize;
             hasher.update(&buffer.as_mut_slice()[..valid_bytes]);
             remaining = remaining.saturating_sub(valid_bytes as u64);
+            progress(file_size - remaining, file_size);
         }
 
         Ok(hasher.finalize_hex())

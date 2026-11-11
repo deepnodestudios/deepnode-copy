@@ -46,7 +46,9 @@ export type EngineEvent =
   | { type: "FileCompleted"; payload: FileItem }
   | { type: "FileSkipped"; payload: { item: FileItem; reason: string } }
   | { type: "FileFailed"; payload: { item: FileItem; error: string } }
+  | { type: "FileFinalizing"; payload: { id: number } }
   | { type: "VerificationStarted"; payload: FileItem }
+  | { type: "VerificationProgress"; payload: { id: number; verified: number; total: number } }
   | { type: "VerificationCompleted"; payload: { item: FileItem; matched: boolean } }
   | { type: "TransferPaused" }
   | { type: "TransferResumed" }
@@ -54,6 +56,15 @@ export type EngineEvent =
   | { type: "TransferCanceled" }
   | { type: "TransferFailed"; payload: string }
   | { type: "ConflictDetected"; payload: ConflictInfo };
+
+/** What the engine is doing with the current file after its bytes were copied. */
+export type FilePhase = { kind: "writing" } | { kind: "verifying"; percent: number } | null;
+
+export function filePhaseLabel(phase: FilePhase, lang: string): string | null {
+  if (!phase) return null;
+  if (phase.kind === "writing") return lang === "tr" ? "Diske yazılıyor…" : "Writing to disk…";
+  return `${lang === "tr" ? "Doğrulanıyor" : "Verifying"} ${phase.percent}%`;
+}
 
 export interface ConflictInfo {
   file_id: number;

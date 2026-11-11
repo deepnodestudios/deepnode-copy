@@ -107,6 +107,11 @@ enum CliConflictPolicy {
 
 #[tokio::main]
 async fn main() {
+    // DEEPNODE_LOG=1 prints the engine's log lines (including per-file phase timings) to stderr.
+    if std::env::var_os("DEEPNODE_LOG").is_some() {
+        let _ = tracing_subscriber::fmt().with_writer(std::io::stderr).try_init();
+    }
+
     let cli = Cli::parse();
 
     let result = match cli.command {

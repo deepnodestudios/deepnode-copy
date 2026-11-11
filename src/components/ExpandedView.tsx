@@ -52,6 +52,7 @@ interface ExpandedViewProps {
   isPaused: boolean;
   isTransferring: boolean;
   transferStatus: TransferStatus;
+  phaseLabel?: string | null;
   alwaysOnTop: boolean;
   onPauseToggle: () => void;
   onCancel: () => void;
@@ -500,6 +501,7 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
   isPaused,
   isTransferring,
   transferStatus,
+  phaseLabel,
   onPauseToggle,
   onCancel,
   onSkipCurrent,
@@ -1085,8 +1087,8 @@ export const ExpandedView: React.FC<ExpandedViewProps> = ({
                 </div>
 
                 <div data-tauri-drag-region="deep" className="text-right flex-shrink-0 font-mono">
-                  <div data-tauri-drag-region="deep" className="text-2xl font-black text-cyan-400 tracking-tight">
-                    {transferStatus === "canceled" ? "0.0 MB/s" : speedDisplay}
+                  <div data-tauri-drag-region="deep" className={`font-black tracking-tight ${phaseLabel && transferStatus === "transferring" ? "text-lg text-amber-300" : "text-2xl text-cyan-400"}`}>
+                    {transferStatus === "canceled" ? "0.0 MB/s" : phaseLabel && transferStatus === "transferring" ? phaseLabel : speedDisplay}
                   </div>
                   <div data-tauri-drag-region="deep" className="text-xs text-emerald-400 font-medium flex items-center gap-1.5 justify-end mt-0.5">
                     <CheckCircle2 className="w-3.5 h-3.5" />

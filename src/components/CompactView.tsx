@@ -29,6 +29,8 @@ interface CompactViewProps {
   source?: string;
   destination?: string;
   status: TransferStatus;
+  /** Shown instead of the speed while the current file is flushed or verified. */
+  phaseLabel?: string | null;
   speedHistory: number[];
   alwaysOnTop: boolean;
   directIo?: boolean;
@@ -50,6 +52,7 @@ export const CompactView: React.FC<CompactViewProps> = ({
   source,
   destination,
   status,
+  phaseLabel,
   alwaysOnTop,
   directIo = false,
   onToggleAlwaysOnTop,
@@ -206,8 +209,8 @@ export const CompactView: React.FC<CompactViewProps> = ({
         </div>
 
         <div data-tauri-drag-region="deep" className="text-right flex-shrink-0 font-mono">
-          <div data-tauri-drag-region="deep" className="text-lg font-black text-cyan-400 tracking-tight">
-            {status === "canceled" ? "0.0 MB/s" : speedDisplay}
+          <div data-tauri-drag-region="deep" className={`font-black tracking-tight ${phaseLabel && status === "transferring" ? "text-sm text-amber-300" : "text-lg text-cyan-400"}`}>
+            {status === "canceled" ? "0.0 MB/s" : phaseLabel && status === "transferring" ? phaseLabel : speedDisplay}
           </div>
         </div>
       </div>

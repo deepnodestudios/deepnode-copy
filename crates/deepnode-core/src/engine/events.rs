@@ -26,7 +26,16 @@ pub enum EngineEvent {
         item: FileItem,
         error: String,
     },
+    /// All bytes of the file were handed to the OS; it is now being flushed to disk and finalized.
+    FileFinalizing {
+        id: u64,
+    },
     VerificationStarted(FileItem),
+    VerificationProgress {
+        id: u64,
+        verified: u64,
+        total: u64,
+    },
     VerificationCompleted {
         item: FileItem,
         matched: bool,

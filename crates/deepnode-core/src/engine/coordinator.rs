@@ -433,7 +433,10 @@ impl TransferCoordinator {
             let _ = self.event_tx.send(EngineEvent::ProgressUpdated(stats.clone()));
 
             // Transfer single file with smart retry loop
+            let copy_started = Instant::now();
             let copy_result = self.copy_with_retry(&mut item, &copier, &mut stats, &mut speed_calc).await;
+            let copy_ms = copy_started.elapsed().as_millis();
+            let mut verify_ms = 0u128;
 
             match copy_result {
                 Err(TransferError::Canceled) => {
@@ -481,8 +484,27 @@ impl TransferCoordinator {
                             return Err(TransferError::Canceled);
                         }
                         let _ = self.event_tx.send(EngineEvent::VerificationStarted(item.clone()));
+                        let verify_started = Instant::now();
                         let verify_res = if let Some(ref src_h) = item.src_hash {
-                            match HashVerifier::compute_file_hash(&item.dst_path, self.config.hash_algorithm, true) {
+                            let verify_tx = self.event_tx.clone();
+                            let verify_id = item.id;
+                            let mut last_emit = Instant::now();
+                            let dst_hash_res = HashVerifier::compute_file_hash_with_progress(
+                                &item.dst_path,
+                                self.config.hash_algorithm,
+                                true,
+                                |verified, total| {
+                                    if verified == total || last_emit.elapsed() >= Duration::from_millis(100) {
+                                        last_emit = Instant::now();
+                                        let _ = verify_tx.send(EngineEvent::VerificationProgress {
+                                            id: verify_id,
+                                            verified,
+                                            total,
+                                        });
+                                    }
+                                },
+                            );
+                            match dst_hash_res {
                                 Ok(dst_h) => {
                                     item.dst_hash = Some(dst_h.clone());
                                     if src_h.eq_ignore_ascii_case(&dst_h) {
@@ -504,6 +526,8 @@ impl TransferCoordinator {
                                 self.config.hash_algorithm,
                             )
                         };
+
+                        verify_ms = verify_started.elapsed().as_millis();
 
                         match verify_res {
                             Ok(_) => {
@@ -563,6 +587,7 @@ impl TransferCoordinator {
                     };
 
                     let mut meta_errors: Vec<String> = Vec::new();
+                    let meta_started = Instant::now();
 
                     // 1. Alternate Data Streams (ADS) - must be written BEFORE timestamps
                     // because writing/modifying any ADS stream automatically updates LastWriteTime on NTFS!
@@ -677,7 +702,14 @@ impl TransferCoordinator {
 
                     item.status = FileItemStatus::Completed;
                     stats.completed_files += 1;
-                    info!("File transfer completed: {} (transferred {} bytes)", item.src_path.display(), bytes_transferred);
+                    info!(
+                        "File transfer completed: {} (transferred {} bytes; copy={}ms verify={}ms finish={}ms)",
+                        item.src_path.display(),
+                        bytes_transferred,
+                        copy_ms,
+                        verify_ms,
+                        meta_started.elapsed().as_millis()
+                    );
                     let _ = self.event_tx.send(EngineEvent::FileCompleted(item.clone()));
                 }
                 Err(err) => {
@@ -796,8 +828,11 @@ impl TransferCoordinator {
                     let current_total = base_transferred + file_copied;
                     sp.speed_calc.record_progress(current_total);
 
+                    // The last block always reports, so the UI reaches the file's true end
+                    // before the (possibly slow) flush and verification start.
+                    let file_done = file_copied >= file_size;
                     let now = Instant::now();
-                    if now.duration_since(sp.last_emit) >= Duration::from_millis(100) {
+                    if file_done || now.duration_since(sp.last_emit) >= Duration::from_millis(100) {
                         sp.last_emit = now;
                         let cur_speed = sp.speed_calc.current_speed();
                         let avg_speed = sp.speed_calc.average_speed(current_total);
@@ -831,6 +866,9 @@ impl TransferCoordinator {
                             transferred: file_copied,
                             total: file_size,
                         });
+                        if file_done {
+                            let _ = event_tx_clone.send(EngineEvent::FileFinalizing { id: file_id });
+                        }
                     }
                 },
             );
@@ -887,6 +925,11 @@ impl TransferCoordinator {
                 }
             }
         }
+    }
+
+    /// Final state of every item (status, hashes, error, resolved destination path).
+    pub fn items(&self) -> &[FileItem] {
+        &self.items
     }
 
     /// Returns list of failed items for "Retry Failed Only" action.

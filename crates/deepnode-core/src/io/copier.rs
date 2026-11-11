@@ -242,7 +242,20 @@ impl FileCopier {
             }
 
             // Make the data durable before it replaces an existing destination.
+            let flush_started = std::time::Instant::now();
             dst_file.flush_sync()?;
+            tracing::info!(
+                "Copy phase timing for {:?}: flush={}ms (direct_io={})",
+                dst_path,
+                flush_started.elapsed().as_millis(),
+                dst_is_direct
+            );
+
+            // The flush can take seconds on slow media; honor a cancel requested meanwhile
+            // while the data is still only in the temporary file.
+            if cancel_flag.load(Ordering::SeqCst) {
+                return Err(TransferError::Canceled);
+            }
 
             Ok(total_copied)
         })();
